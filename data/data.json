@@ -1,0 +1,11 @@
+[
+    {"file": "audio_1.wav",
+    "text": "You-a want spaghetti? BOOM! You got spaghetti. You-a want MORE spaghetti? BOOM! You got-a MORE spaghetti. BUT WAIT—WHERE’S THE SAUCE? OH NO— MAMMA MIA, WE’RE OUT OF SAUCE!",
+    "label": 0},
+    {"file": "audio_2.wav",
+    "text": "Today’s forecast? Spaghetti rain. Repeat: SPAGHETTI RAIN. Citizens advised to carry-a fork at all times. Back to you, Gabibbo.",
+    "label": 1},
+    {"file": "audio_3.wav",
+    "text": "STOP! YOU CANNOT PASS! WHY? BECAUSE I SAID-A SO! NO, NO, NO—WAIT— (car speeds by) MAMMA MIA, HE DID NOT STOP!",
+    "label": 0}
+]
