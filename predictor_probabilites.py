@@ -90,7 +90,7 @@ class Predictor:
     
     def _read_config(self, config_path):
         # opening the config file and extracting the parameters
-        with open(config_file, "r") as stream:
+        with open("cfg.yaml", "r") as stream:
             try:
                 config = yaml.safe_load(stream)
             except yaml.YAMLError as exc:
@@ -105,7 +105,6 @@ class Predictor:
         self.lr = config["training"]["lr"]
         self.epochs = config["training"]["epochs"]
         self.val_split_ratio = config["training"].get("val_split_ratio", 0.2)
-        self.max_grad_norm = config["training"].get("max_grad_norm", 5.0)
     
     def _tokenize_text(self, text):
         # Tokenize the text
@@ -171,13 +170,11 @@ class Predictor:
 
             # Forward pass
             self.optimizer.zero_grad()
-            logits, _, classes = self.model(input_ids, attention_mask)
+            logits, prob, classes = self.model(input_ids, attention_mask)
             # Compute loss
-            loss = self.criterion(classes, labels) # using classes computed from probabilities (BCELoss)
-            # loss = self.criterion(logits, labels) # using logits directly (BCEWithLogitsLoss)
+            loss = self.criterion(prob, labels) # using probabilities (BCELoss)
             # Backward pass and optimization
             loss.backward()
-            torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.max_grad_norm)
             self.optimizer.step()
 
             epoch_loss += loss.item()
@@ -207,8 +204,8 @@ class Predictor:
                 # Forward pass
                 logits, _, classes = self.model(input_ids, attention_mask)
                 # Compute loss
-                loss = self.criterion(classes, labels)
-                # loss = self.criterion(logits, labels)
+                #loss = self.criterion(classes, labels)
+                loss = self.criterion(logits, labels)
                 # Accumulate loss
                 epoch_loss += loss.item()
                 for k in epoch_metrics.keys():
@@ -231,7 +228,7 @@ class Predictor:
     def _acc(self, preds, target):
         return accuracy_score(target, preds)
 
-    def _plot_training(self, train_loss, test_loss, metrics_names, train_metrics_logs, test_metrics_logs):
+    def _plot_training(train_loss, test_loss, metrics_names, train_metrics_logs, test_metrics_logs):
         fig, ax = plt.subplots(1, len(metrics_names) + 1, figsize=((len(metrics_names) + 1) * 5, 5))
 
         ax[0].plot(train_loss, c='blue', label='train')
@@ -242,7 +239,7 @@ class Predictor:
 
         for i in range(len(metrics_names)):
             ax[i + 1].plot(train_metrics_logs[i], c='blue', label='train')
-            ax[i + 1].plot(test_metrics_logs[i], c='orange', label='validation')
+            ax[i + 1].plot(test_metrics_logs[i], c='orange', label='test')
             ax[i + 1].set_title(metrics_names[i])
             ax[i + 1].set_xlabel('epoch')
             ax[i + 1].legend()
@@ -251,7 +248,7 @@ class Predictor:
         # close the figure to free up memory
         plt.close(fig)
     
-    def _update_metrics_log(self, metrics_names, metrics_log, new_metrics_dict):
+    def _update_metrics_log(metrics_names, metrics_log, new_metrics_dict):
         for i in range(len(metrics_names)):
             curr_metric_name = metrics_names[i]
             metrics_log[i].append(new_metrics_dict[curr_metric_name])

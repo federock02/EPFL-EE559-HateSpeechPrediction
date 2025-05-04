@@ -1,17 +1,10 @@
-audio:
-  n_mels: 128
-  target_sample_rate: 16000
-  max_time_steps: 512
-  n_fft: 1024
-  hop_length: 512
-
 text:
   max_len: 512
   hidden_size: 512
 
 training:
-  batch_size: 10
+  batch_size: 100
   lr: 0.0001
-  epochs: 1
+  epochs: 25
   val_split_ratio: 0.2
   
