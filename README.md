@@ -28,7 +28,7 @@ After the image has been built successfully, push it to the EPFL registry:
 You can launch the Python script either in a training job or an interactive job using the command:
 
 ```bash
-    python3 ~/Predictor/predictor2.py --dataset_path ~/Predictor/data/ --results_path ~/Predictor/results/
+    python3 ~/Predictor/predictor.py --dataset_path ~/Predictor/data/ --results_path ~/Predictor/results/
 ```
 
 All the `.csv` files in the `\~/Predictor/data/` folder will be used for the training and evaluation, while the logs, checkpoints, outputs and errors will be stored in the `\~/Predictor/results/` folder
