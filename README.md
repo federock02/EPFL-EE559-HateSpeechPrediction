@@ -8,4 +8,4 @@ The image has to then be pushed to the registry:
 The python script can be launched either in a training job or in an interactive job with the following command:
     python3 ~/Predictor/predictor2.py --dataset_path ~/Predictor/data/ --results_path ~/Predictor/results/
 
-All the .csv files in the '~/Predictor/data/' folder will be used for the training and evaluation, while the logs, checkpoints, outputs and errors will be stored in the '~/Predictor/results/'
+All the .csv files in the '\~/Predictor/data/' folder will be used for the training and evaluation, while the logs, checkpoints, outputs and errors will be stored in the '~/Predictor/results/'
