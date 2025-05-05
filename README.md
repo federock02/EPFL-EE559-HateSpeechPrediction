@@ -31,8 +31,4 @@ You can launch the Python script either in a training job or an interactive job 
     python3 ~/Predictor/predictor2.py --dataset_path ~/Predictor/data/ --results_path ~/Predictor/results/
 ```
 
-<<<<<<< HEAD
 All the `.csv` files in the `\~/Predictor/data/` folder will be used for the training and evaluation, while the logs, checkpoints, outputs and errors will be stored in the `\~/Predictor/results/` folder
-=======
-All the .csv files in the '\~/Predictor/data/' folder will be used for the training and evaluation, while the logs, checkpoints, outputs and errors will be stored in the '~/Predictor/results/'
->>>>>>> 1db53fe19b28e285de98e38ac936b94271dc426d
