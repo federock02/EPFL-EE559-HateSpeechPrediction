@@ -1,6 +1,12 @@
 text:
   max_len: 512
-  hidden_size: 512
+
+lstm:
+  lstm_hudden_size: 512
+
+classifier:
+  classifier_hidden_size: 512
+  dropout: 0.25
 
 training:
   batch_size: 100
