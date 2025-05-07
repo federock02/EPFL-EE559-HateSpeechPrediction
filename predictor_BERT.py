@@ -23,8 +23,6 @@ import time
 
 from checkpoint_utils import save_checkpoint, load_checkpoint
 
-import optuna
-
 def parse_args():
     # when working with python files from console it's better to specify
     parser = argparse.ArgumentParser(description="File creation script.")
@@ -203,21 +201,10 @@ class Predictor:
         print(f"Validation set size: {len(val_texts)}")
 
         # Instantiate dataset and dataloaders
-        train_dataset = self.TextDataset(train_texts, train_labels, text_transform=self._tokenize_text, max_len=self.max_len, train=True)
+        train_dataset = self.TextDataset(train_texts, train_labels, text_transform=self._tokenize_text, max_len=self.max_len)
         train_loader = DataLoader(train_dataset, batch_size=self.batch_size, shuffle=True, collate_fn=self._collate_fn)
-
-        # weights = []
-        # val_cut = []
-        # # cut phrases in validation set only once
-        # for text in val_texts:
-        #     length = len(text.split())
-        #     divider = np.random.randint(0, length)
-        #     text = " ".join(text.split()[:divider]) # take the prefix
-        #     val_cut.append(text)
-        #     weight = divider / length
-        #     weights.append(weight)
         
-        val_dataset = self.TextDataset(val_texts, val_labels, text_transform=self._tokenize_text, max_len=self.max_len, train=False, weight=None)
+        val_dataset = self.TextDataset(val_texts, val_labels, text_transform=self._tokenize_text, max_len=self.max_len)
         val_loader = DataLoader(val_dataset, batch_size=self.batch_size, shuffle=False, collate_fn=self._collate_fn)
 
         return train_loader, val_loader
@@ -463,13 +450,11 @@ class Predictor:
             return output, prob, class_value
         
     class TextDataset(Dataset):
-        def __init__(self, text_data, labels, text_transform=None, max_len=512, train=True, weight=None):
+        def __init__(self, text_data, labels, text_transform=None, max_len=512):
             self.text_data = text_data
             self.labels = labels
             self.text_transform = text_transform
             self.max_len = max_len
-            self.train = train
-            self.weight = weight
 
         def __len__(self):
             return len(self.labels)
@@ -477,19 +462,11 @@ class Predictor:
         def __getitem__(self, idx):
             # Tokenize and preprocess text
             text = self.text_data[idx]
-            
-            # if self.train:
-            #     length = len(text.split())
-            #     divider = np.random.randint(0, length)
-            #     text = " ".join(text.split()[:divider]) # take the prefix
-            #     weight = divider / length
-            # else:
-            #     weight = self.weight[idx]
 
             length = len(text.split())
             divider = np.random.randint(0, length)
             text = " ".join(text.split()[:divider]) # take the prefix
-            weight = divider / length
+            weight = (np.exp(3*divider / length) - 1) / (np.exp(3) - 1)
             
             if self.text_transform:
                 input_ids, attention_mask = self.text_transform(text)
