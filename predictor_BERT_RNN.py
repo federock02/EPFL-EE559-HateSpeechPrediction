@@ -4,7 +4,7 @@ from torch.optim import Adam
 from torch.utils.data import Dataset
 from torch.utils.data import DataLoader
 
-from transformers import RobertaTokenizer, RobertaModel, RobertaConfig
+from transformers import BertModel, BertTokenizer
 
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import f1_score, accuracy_score
@@ -38,11 +38,7 @@ DATADIR, RESULTS_DIR, DEBUG = parse_args()
 DATETIME = time.strftime("%Y-%m-%d_%H-%M-%S")
 current_results_dir = Path(RESULTS_DIR) / DATETIME
 print(f"Logging results to {current_results_dir}")
-if not os.path.exists(current_results_dir):
-    os.mkdir(current_results_dir)
-# directory to store model checkpoints to
-if not os.path.exists(Path(current_results_dir) / 'checkpoints'):
-    os.mkdir(Path(current_results_dir) / 'checkpoints')
+os.makedirs(current_results_dir / 'checkpoints', exist_ok=True)
 # dataset directory
 if not os.path.exists(Path(DATADIR)):
     raise Exception(f'Dataset not found. Please upload a dataset first. '
@@ -65,13 +61,10 @@ class Predictor:
         self._read_config(cfg_file)
 
         # tokenizer
-        self.tokenizer = RobertaTokenizer.from_pretrained("FacebookAI/roberta-base")
-
-        # model configuration
-        config = RobertaConfig()
+        self.tokenizer = BertTokenizer.from_pretrained("bert-base-uncased")
 
         # text encoder
-        self.text_encoder = RobertaModel(config)
+        self.text_encoder = BertModel.from_pretrained("bert-base-uncased")
         # freeze all parameters except the pooler
         for param in self.text_encoder.parameters():
             param.requires_grad = False
@@ -83,7 +76,9 @@ class Predictor:
         # prediction model
         model = self.PredictionModel(
             text_encoder=self.text_encoder,
-            hidden_size=self.hidden_size,
+            classifier_hidden_size=self.classifier_hidden_size,
+            lstm_hidden_size=self.lstm_hidden_size,
+            dropout=self.dropout,
             output_dim=1
         )
 
@@ -103,7 +98,7 @@ class Predictor:
         self.optimizer = Adam(filter(lambda p: p.requires_grad, self.model.parameters()), lr=self.lr)
 
         # criterion
-        if elf.loss_computation == "probabilities":
+        if self.loss_computation == "classes" or self.loss_computation == "probabilities":
             self.criterion = nn.BCELoss(reduction='none')
         else:
             self.criterion = nn.BCEWithLogitsLoss(reduction='none')
@@ -126,7 +121,13 @@ class Predictor:
 
         # text
         self.max_len = config["text"].get("max_len", 512)
-        self.hidden_size = config["text"].get("hidden_size", 512)
+
+        # LSTM
+        self.lstm_hidden_size = config["text"].get("lstm_hidden_size", 512)
+
+        # classifier
+        self.classifier_hidden_size = config["text"].get("classifier_hidden_size", 512)
+        self.dropout = config["text"].get("dropout", 0.25)
 
         #training
         self.batch_size = config["training"]["batch_size"]
@@ -222,7 +223,9 @@ class Predictor:
             # Forward pass
             self.optimizer.zero_grad()
             logits, prob, classes = self.model(input_ids, attention_mask)
-            if self.loss_computation == "probabilities":
+            if self.loss_computation == "classes":
+                loss_per_element = self.criterion(classes, labels) # using classes computed from probabilities (BCELoss)
+            elif self.loss_computation == "probabilities":
                 loss_per_element = self.criterion(prob, labels)
             else:
                 loss_per_element = self.criterion(logits, labels) # using logits directly (BCEWithLogitsLoss)
@@ -265,7 +268,9 @@ class Predictor:
 
                 logits, prob, classes = self.model(input_ids, attention_mask)
 
-                if self.loss_computation == "probabilities":
+                if self.loss_computation == "classes":
+                    loss_per_element = self.criterion(classes, labels) # using classes computed from probabilities (BCELoss)
+                elif self.loss_computation == "probabilities":
                     loss_per_element = self.criterion(prob, labels)
                 else:
                     loss_per_element = self.criterion(logits, labels) # using logits directly (BCEWithLogitsLoss)
@@ -299,7 +304,7 @@ class Predictor:
         fig, ax = plt.subplots(1, len(metrics_names) + 2, figsize=((len(metrics_names) + 2) * 5, 5))
         
         # join loss computation with date and time
-        title = "RoBERTa: " + str(self.loss_computation) + " -- " + DATETIME
+        title = "BERT: " + str(self.loss_computation) + " -- " + DATETIME
         fig.suptitle(title, fontsize=16)
 
         textstr = "\n".join((
@@ -382,7 +387,7 @@ class Predictor:
             # --- End Early Stopping Logic ---
             
             save_checkpoint(self.model, self.optimizer, epoch, loss=train_loss, checkpoint_path = Path(current_results_dir) / "checkpoints/checkpoint.pth", store_checkpoint_for_every_epoch=store_checkpoint_for_every_epoch)
-            
+                        
             time_so_far = time.time() - start_time
             expected_time = time_so_far / (epoch + 1) * (self.epochs - epoch - 1)
             print(f"Time elapsed: {time_so_far:.2f}s, Expected time remaining: {expected_time:.2f}s")
@@ -412,17 +417,28 @@ class Predictor:
         return prob.cpu().numpy(), class_value.cpu().numpy()
 
     class PredictionModel(nn.Module):
-        def __init__(self, text_encoder, hidden_size, output_dim):
+        def __init__(self, text_encoder, classifier_hidden_size, lstm_hidden_size, dropout, output_dim):
             super().__init__()
             self.text_encoder = text_encoder
+            self.lstm_hidden_size = lstm_hidden_size
+
+            self.lstm = nn.LSTM(
+                input_size=self.text_encoder.config.hidden_size, # input size is the dimension of BERT's token embeddings
+                hidden_size=lstm_hidden_size, # LSTM hidden state size
+                batch_first=True, # input tensors are (batch_size, seq_len, input_size)
+                bidirectional=True # use a bidirectional LSTM
+            )
+        
+            # the output size of a bidirectional LSTM is 2 * hidden_size
+            lstm_output_size = lstm_hidden_size * 2
 
             self.classifier = nn.Sequential(
-                nn.Linear(self.text_encoder.config.hidden_size, hidden_size),
+                nn.Linear(lstm_output_size, classifier_hidden_size),
                 nn.ReLU(),
-                nn.Linear(hidden_size, hidden_size),
+                nn.Linear(classifier_hidden_size, classifier_hidden_size // 2),
                 nn.ReLU(),
-                nn.Dropout(0.25),
-                nn.Linear(hidden_size, output_dim)
+                nn.Dropout(dropout),
+                nn.Linear(classifier_hidden_size // 2, output_dim)
             )
             self.classifier.apply(self._init_weights)
         
@@ -440,10 +456,18 @@ class Predictor:
                     module.weight.data[module.padding_idx].zero_()
 
         def forward(self, input_ids, attention_mask):
+            # Get the BERT embeddings
             out = self.text_encoder(input_ids=input_ids, attention_mask=attention_mask)
-            text_features = out.pooler_output
-            output = self.classifier(text_features)
-            # print(f"Output: {output}")
+            # get sequence output from BERT for use in LSTM
+            sequence_output = out.last_hidden_state
+            # pass the sequence output through the LSTM
+            # sequence_output shape: (batch_size, seq_len, hidden_size)
+            lstm_out, _ = self.lstm(sequence_output)
+            lstm_pooled_output = lstm_out[:, 0, :]
+            # pass the LSTM output through the classifier
+            # compute the logits
+            output = self.classifier(lstm_pooled_output)
+            # compute probabilities and class values
             prob = torch.sigmoid(output)
             class_value = torch.round(prob)
             return output, prob, class_value
@@ -454,7 +478,7 @@ class Predictor:
             self.labels = labels
             self.text_transform = text_transform
             self.max_len = max_len
-            
+
         def __len__(self):
             return len(self.labels)
 
@@ -463,10 +487,10 @@ class Predictor:
             text = self.text_data[idx]
 
             length = len(text.split())
-            divider = np.random.randint(0, length)
+            divider = np.random.randint(0, length+1)
             text = " ".join(text.split()[:divider]) # take the prefix
             weight = (np.exp(3*divider / length) - 1) / (np.exp(3) - 1)
-
+            
             if self.text_transform:
                 input_ids, attention_mask = self.text_transform(text)
 
@@ -526,4 +550,3 @@ if __name__ == "__main__":
         sys.stdout = original_stdout
         sys.stderr = original_stderr
         print(f"Training process finished. Check logs in {current_results_dir}") # This will print to the console
-    
