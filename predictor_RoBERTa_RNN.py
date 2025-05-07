@@ -498,7 +498,7 @@ class Predictor:
             text = self.text_data[idx]
 
             length = len(text.split())
-            divider = np.random.randint(0, length+1)
+            divider = np.random.randint(1, length+1)
             text = " ".join(text.split()[:divider]) # take the prefix
             weight = (np.exp(3*divider / length) - 1) / (np.exp(3) - 1)
             
