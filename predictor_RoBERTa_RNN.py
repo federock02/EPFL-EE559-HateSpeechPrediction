@@ -4,7 +4,7 @@ from torch.optim import Adam
 from torch.utils.data import Dataset
 from torch.utils.data import DataLoader
 
-from transformers import BertModel, BertTokenizer
+from transformers import RobertaTokenizer, RobertaModel, RobertaConfig
 
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import f1_score, accuracy_score
@@ -61,10 +61,13 @@ class Predictor:
         self._read_config(cfg_file)
 
         # tokenizer
-        self.tokenizer = BertTokenizer.from_pretrained("bert-base-uncased")
+        self.tokenizer = RobertaTokenizer.from_pretrained("FacebookAI/roberta-base")
+
+        # model configuration
+        config = RobertaConfig()
 
         # text encoder
-        self.text_encoder = BertModel.from_pretrained("bert-base-uncased")
+        self.text_encoder = RobertaModel(config)
         # freeze all parameters except the pooler
         for param in self.text_encoder.parameters():
             param.requires_grad = False
@@ -304,7 +307,7 @@ class Predictor:
         fig, ax = plt.subplots(1, len(metrics_names) + 2, figsize=((len(metrics_names) + 2) * 5, 5))
         
         # join loss computation with date and time
-        title = "BERT_RNN: " + str(self.loss_computation) + " -- " + DATETIME
+        title = "RoBERTa_RNN: " + str(self.loss_computation) + " -- " + DATETIME
         fig.suptitle(title, fontsize=16)
 
         textstr = "\n".join((
@@ -422,7 +425,7 @@ class Predictor:
             self.lstm_hidden_size = lstm_hidden_size
 
             self.lstm = nn.LSTM(
-                input_size=self.text_encoder.config.hidden_size, # input size is the dimension of BERT's token embeddings
+                input_size=self.text_encoder.config.hidden_size, # input size is the dimension of RoBERTa's token embeddings
                 hidden_size=lstm_hidden_size, # LSTM hidden state size
                 batch_first=True, # input tensors are (batch_size, seq_len, input_size)
                 bidirectional=True # use a bidirectional LSTM
@@ -455,9 +458,9 @@ class Predictor:
                     module.weight.data[module.padding_idx].zero_()
 
         def forward(self, input_ids, attention_mask):
-            # Get the BERT embeddings
+            # Get the RoBERTa embeddings
             out = self.text_encoder(input_ids=input_ids, attention_mask=attention_mask)
-            # get sequence output from BERT for use in LSTM
+            # get sequence output from RoBERTa for use in LSTM
             sequence_output = out.last_hidden_state
             # pass the sequence output through the LSTM
             # sequence_output shape: (batch_size, seq_len, hidden_size)

@@ -80,7 +80,8 @@ class Predictor:
         # prediction model
         model = self.PredictionModel(
             text_encoder=self.text_encoder,
-            hidden_size=self.hidden_size,
+            classifier_hidden_size=self.classifier_hidden_size,
+            dropout=self.dropout,
             output_dim=1
         )
 
@@ -123,7 +124,10 @@ class Predictor:
 
         # text
         self.max_len = config["text"].get("max_len", 512)
-        self.hidden_size = config["text"].get("hidden_size", 512)
+
+        # classifier
+        self.classifier_hidden_size = config["text"].get("classifier_hidden_size", 512)
+        self.dropout = config["text"].get("dropout", 0.25)
 
         #training
         self.batch_size = config["training"]["batch_size"]
@@ -335,7 +339,6 @@ class Predictor:
         return metrics_log
     
     def train_model(self):
-        best_accuracy = 0
         train_loss_log,  val_loss_log = [], []
         metrics_names = list(self.metrics.keys())
         train_metrics_log = [[] for i in range(len(self.metrics))]
@@ -413,17 +416,17 @@ class Predictor:
         return prob.cpu().numpy(), class_value.cpu().numpy()
 
     class PredictionModel(nn.Module):
-        def __init__(self, text_encoder, hidden_size, output_dim):
+        def __init__(self, text_encoder, classifier_hidden_size, dropout, output_dim):
             super().__init__()
             self.text_encoder = text_encoder
 
             self.classifier = nn.Sequential(
-                nn.Linear(self.text_encoder.config.hidden_size, hidden_size),
+                nn.Linear(self.text_encoder.config.hidden_size, classifier_hidden_size),
                 nn.ReLU(),
-                nn.Linear(hidden_size, hidden_size),
+                nn.Linear(classifier_hidden_size, classifier_hidden_size // 2),
                 nn.ReLU(),
-                nn.Dropout(0.25),
-                nn.Linear(hidden_size, output_dim)
+                nn.Dropout(dropout5),
+                nn.Linear(classifier_hidden_size // 2, output_dim)
             )
             self.classifier.apply(self._init_weights)
         
