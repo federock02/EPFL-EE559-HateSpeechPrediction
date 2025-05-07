@@ -4,7 +4,7 @@ from torch.optim import Adam
 from torch.utils.data import Dataset
 from torch.utils.data import DataLoader
 
-from transformers import RobertaTokenizer, RobertaModel, RobertaConfig
+from transformers import GPT2Model, GPT2Tokenizer, GPT2Config
 
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import f1_score, accuracy_score
@@ -29,7 +29,7 @@ def parse_args():
     parser.add_argument("--dataset_path", required=True, help="Dataset path")
     parser.add_argument("--results_path", required=True, help="Output directory")
     parser.add_argument("--debug", action="store_true", help="Enable debug mode")
-    parser.add_argument("--no_freeze", action="store_true", help="Do not freeze the text encoder")
+    parser.add_argument("--no_freeze", action="store_true", help="Do not freeze the text encoder parameters")
 
     args = parser.parse_args()
 
@@ -66,28 +66,28 @@ class Predictor:
         self._read_config(cfg_file)
 
         # tokenizer
-        self.tokenizer = RobertaTokenizer.from_pretrained("FacebookAI/roberta-base")
-
-        # model configuration
-        config = RobertaConfig()
+        self.tokenizer = GPT2Tokenizer.from_pretrained("gpt2")
+        # GPT2 does not have a default pad token, so we set it to the eos token
+        self.tokenizer.pad_token = self.tokenizer.eos_token
+        print(f"Tokenizer pad token set to: {self.tokenizer.pad_token}")
 
         # text encoder
-        self.text_encoder = RobertaModel(config)
+        self.text_encoder = GPT2Model.from_pretrained("gpt2")
 
-        if NO_FREEZE:
-            # require grad for all parameters
-            for param in self.text_encoder.parameters():
-                param.requires_grad = True
-            for param in self.text_encoder.pooler.parameters():
-                param.requires_grad = True
-        else:
-            # freeze all parameters except the pooler
-            for param in self.text_encoder.parameters():
+        # freeze initial layers of the GPT2 model based on config
+        if not NO_FREEZE:
+            freeze_encoder_layers = 2*self.text_encoder.config.n_layer // 3
+            print(f"Freezing the first {freeze_encoder_layers} layers of the GPT2 encoder.")
+            # Freeze embedding layer
+            for param in self.text_encoder.wte.parameters():
                 param.requires_grad = False
-            for param in self.text_encoder.pooler.parameters():
-                param.requires_grad = True
+            for param in self.text_encoder.wpe.parameters():
+                param.requires_grad = False
 
-        print(f"Text encoder model:\n{self.text_encoder}")
+            # Freeze specified number of transformer layers
+            for i in range(min(freeze_encoder_layers, len(self.text_encoder.h))):
+                for param in self.text_encoder.h[i].parameters():
+                    param.requires_grad = False
 
         # prediction model
         model = self.PredictionModel(
@@ -113,7 +113,7 @@ class Predictor:
         self.optimizer = Adam(filter(lambda p: p.requires_grad, self.model.parameters()), lr=self.lr)
 
         # criterion
-        if self.loss_computation == "probabilities":
+        if self.loss_computation == "classes" or self.loss_computation == "probabilities":
             self.criterion = nn.BCELoss(reduction='none')
         else:
             self.criterion = nn.BCEWithLogitsLoss(reduction='none')
@@ -235,7 +235,9 @@ class Predictor:
             # Forward pass
             self.optimizer.zero_grad()
             logits, prob, classes = self.model(input_ids, attention_mask)
-            if self.loss_computation == "probabilities":
+            if self.loss_computation == "classes":
+                loss_per_element = self.criterion(classes, labels) # using classes computed from probabilities (BCELoss)
+            elif self.loss_computation == "probabilities":
                 loss_per_element = self.criterion(prob, labels)
             else:
                 loss_per_element = self.criterion(logits, labels) # using logits directly (BCEWithLogitsLoss)
@@ -278,7 +280,9 @@ class Predictor:
 
                 logits, prob, classes = self.model(input_ids, attention_mask)
 
-                if self.loss_computation == "probabilities":
+                if self.loss_computation == "classes":
+                    loss_per_element = self.criterion(classes, labels) # using classes computed from probabilities (BCELoss)
+                elif self.loss_computation == "probabilities":
                     loss_per_element = self.criterion(prob, labels)
                 else:
                     loss_per_element = self.criterion(logits, labels) # using logits directly (BCEWithLogitsLoss)
@@ -312,7 +316,7 @@ class Predictor:
         fig, ax = plt.subplots(1, len(metrics_names) + 2, figsize=((len(metrics_names) + 2) * 5, 5))
         
         # join loss computation with date and time
-        title = "RoBERTa: " + str(self.loss_computation) + " -- " + DATETIME
+        title = "BERT: " + str(self.loss_computation) + " -- " + DATETIME
         fig.suptitle(title, fontsize=16)
 
         textstr = "\n".join((
@@ -347,7 +351,6 @@ class Predictor:
         return metrics_log
     
     def train_model(self):
-        best_accuracy = 0
         train_loss_log,  val_loss_log = [], []
         metrics_names = list(self.metrics.keys())
         train_metrics_log = [[] for i in range(len(self.metrics))]
@@ -395,7 +398,7 @@ class Predictor:
             # --- End Early Stopping Logic ---
             
             save_checkpoint(self.model, self.optimizer, epoch, loss=train_loss, checkpoint_path = Path(current_results_dir) / "checkpoints/checkpoint.pth", store_checkpoint_for_every_epoch=store_checkpoint_for_every_epoch)
-            
+                        
             time_so_far = time.time() - start_time
             expected_time = time_so_far / (epoch + 1) * (self.epochs - epoch - 1)
             print(f"Time elapsed: {time_so_far:.2f}s, Expected time remaining: {expected_time:.2f}s")
@@ -430,7 +433,7 @@ class Predictor:
             self.text_encoder = text_encoder
 
             self.classifier = nn.Sequential(
-                nn.Linear(self.text_encoder.config.hidden_size, classifier_hidden_size),
+                nn.Linear(GPT2Config.from_pretrained("gpt2").hidden_size, classifier_hidden_size),
                 nn.ReLU(),
                 nn.Linear(classifier_hidden_size, classifier_hidden_size // 2),
                 nn.ReLU(),
@@ -479,7 +482,7 @@ class Predictor:
             divider = np.random.randint(0, length)
             text = " ".join(text.split()[:divider]) # take the prefix
             weight = (np.exp(3*divider / length) - 1) / (np.exp(3) - 1)
-
+            
             if self.text_transform:
                 input_ids, attention_mask = self.text_transform(text)
 
@@ -539,4 +542,3 @@ if __name__ == "__main__":
         sys.stdout = original_stdout
         sys.stderr = original_stderr
         print(f"Training process finished. Check logs in {current_results_dir}") # This will print to the console
-    

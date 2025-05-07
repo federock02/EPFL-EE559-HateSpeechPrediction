@@ -29,12 +29,13 @@ def parse_args():
     parser.add_argument("--dataset_path", required=True, help="Dataset path")
     parser.add_argument("--results_path", required=True, help="Output directory")
     parser.add_argument("--debug", action="store_true", help="Enable debug mode")
+    parser.add_argument("--no_freeze", action="store_true", help="Do not freeze the text encoder")
 
     args = parser.parse_args()
 
-    return args.dataset_path, args.results_path, args.debug
+    return args.dataset_path, args.results_path, args.debug, args.no_freeze
 
-DATADIR, RESULTS_DIR, DEBUG = parse_args()
+DATADIR, RESULTS_DIR, DEBUG, NO_FREEZE = parse_args()
 DATETIME = time.strftime("%Y-%m-%d_%H-%M-%S")
 current_results_dir = Path(RESULTS_DIR) / DATETIME
 print(f"Logging results to {current_results_dir}")
@@ -69,11 +70,19 @@ class Predictor:
 
         # text encoder
         self.text_encoder = BertModel.from_pretrained("bert-base-uncased")
-        # freeze all parameters except the pooler
-        for param in self.text_encoder.parameters():
-            param.requires_grad = False
-        for param in self.text_encoder.pooler.parameters():
-            param.requires_grad = True
+
+        if NO_FREEZE:
+            # require grad for all parameters
+            for param in self.text_encoder.parameters():
+                param.requires_grad = True
+            for param in self.text_encoder.pooler.parameters():
+                param.requires_grad = True
+        else:
+            # freeze all parameters except the pooler
+            for param in self.text_encoder.parameters():
+                param.requires_grad = False
+            for param in self.text_encoder.pooler.parameters():
+                param.requires_grad = True
 
         print(f"Text encoder model:\n{self.text_encoder}")
 
@@ -425,7 +434,7 @@ class Predictor:
                 nn.ReLU(),
                 nn.Linear(classifier_hidden_size, classifier_hidden_size // 2),
                 nn.ReLU(),
-                nn.Dropout(dropout5),
+                nn.Dropout(dropout),
                 nn.Linear(classifier_hidden_size // 2, output_dim)
             )
             self.classifier.apply(self._init_weights)

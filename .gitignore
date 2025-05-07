@@ -6,3 +6,4 @@ predictor_probabilities.py
 prediction_test.ipyb
 my_test copy.ipynb
 torchmultimodal/
+results/

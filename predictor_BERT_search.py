@@ -485,14 +485,6 @@ class Predictor:
         def __getitem__(self, idx):
             # Tokenize and preprocess text
             text = self.text_data[idx]
-            
-            # if self.train:
-            #     length = len(text.split())
-            #     divider = np.random.randint(0, length)
-            #     text = " ".join(text.split()[:divider]) # take the prefix
-            #     weight = divider / length
-            # else:
-            #     weight = self.weight[idx]
 
             length = len(text.split())
             divider = np.random.randint(0, length)
