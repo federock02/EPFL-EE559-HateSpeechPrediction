@@ -1,6 +1,6 @@
 import torch
 from torch import nn
-from torch.optim import Adam
+from torch.optim import Adam, AdamW
 from torch.utils.data import Dataset
 from torch.utils.data import DataLoader
 
@@ -103,7 +103,27 @@ class Predictor:
         self.train_loader, self.val_loader = self._load_dataset(data_files)
 
         # optimizer
-        self.optimizer = Adam(filter(lambda p: p.requires_grad, self.model.parameters()), lr=self.lr)
+        if self.weight_decay == 0:
+            print("No weight decay applied.")
+            self.optimizer = Adam(filter(lambda p: p.requires_grad, self.model.parameters()), lr=self.lr)
+        else:
+            print(f"Applying weight decay of {self.weight_decay}")
+            decay_parameters = []
+            no_decay_parameters = []
+            for name, param in self.model.named_parameters():
+                if not param.requires_grad:
+                    continue
+                # Check for parameters that should not have weight decay
+                if name.endswith(".bias") or "layernorm" in name.lower() or "batchnorm" in name.lower():
+                    no_decay_parameters.append(param)
+                else:
+                    decay_parameters.append(param)
+            
+            self.optimizer = AdamW([
+                {'params': decay_parameters, 'weight_decay': self.weight_decay},
+                {'params': no_decay_parameters, 'weight_decay': 0.0}
+            ], lr=self.lr)
+            
 
         # criterion
         if self.loss_computation == "classes" or self.loss_computation == "probabilities":
@@ -131,11 +151,11 @@ class Predictor:
         self.max_len = config["text"].get("max_len", 512)
 
         # LSTM
-        self.lstm_hidden_size = config["text"].get("lstm_hidden_size", 512)
+        self.lstm_hidden_size = config["lstm"].get("lstm_hidden_size", 512)
 
         # classifier
-        self.classifier_hidden_size = config["text"].get("classifier_hidden_size", 512)
-        self.dropout = config["text"].get("dropout", 0.25)
+        self.classifier_hidden_size = config["classifier"].get("classifier_hidden_size", 512)
+        self.dropout = config["classifier"].get("dropout", 0.25)
 
         #training
         self.batch_size = config["training"]["batch_size"]
@@ -144,6 +164,7 @@ class Predictor:
         self.val_split_ratio = config["training"].get("val_split_ratio", 0.2)
         self.max_grad_norm = config["training"].get("max_grad_norm", 5.0)
         self.patience = config["training"].get("patience", 10) # for early stopping
+        self.weight_decay = config["training"].get("weight_decay", 0.0)
 
         # loss computation
         self.loss_computation = config.get("loss_computation", "logits")
