@@ -1,6 +1,6 @@
 import torch
 from torch import nn
-from torch.optim import Adam
+from torch.optim import Adam, AdamW
 from torch.utils.data import Dataset
 from torch.utils.data import DataLoader
 
