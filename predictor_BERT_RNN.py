@@ -64,6 +64,7 @@ class Predictor:
         self.tokenizer = BertTokenizer.from_pretrained("bert-base-uncased")
 
         # text encoder
+        # self.text_encoder = BertModel.from_pretrained("GroNLP/hateBERT")
         self.text_encoder = BertModel.from_pretrained("bert-base-uncased")
 
         if NO_FREEZE:
@@ -460,14 +461,27 @@ class Predictor:
             # the output size of a bidirectional LSTM is 2 * hidden_size
             lstm_output_size = lstm_hidden_size * 2
 
+            # self.classifier = nn.Sequential(
+            #     nn.Linear(self.text_encoder.config.hidden_size + lstm_output_size, classifier_hidden_size),
+            #     # nn.Linear(lstm_output_size, classifier_hidden_size),
+            #     nn.ReLU(),
+            #     nn.Linear(classifier_hidden_size, classifier_hidden_size // 2),
+            #     nn.ReLU(),
+            #     nn.Dropout(dropout),
+            #     nn.Linear(classifier_hidden_size // 2, output_dim)
+            # )
+
             self.classifier = nn.Sequential(
-                nn.Linear(lstm_output_size, classifier_hidden_size),
-                nn.ReLU(),
+                nn.Linear(self.text_encoder.config.hidden_size + lstm_output_size, classifier_hidden_size),
+                # nn.Linear(lstm_output_size, classifier_hidden_size),
+                nn.LayerNorm(classifier_hidden_size),
+                nn.GELU(),
                 nn.Linear(classifier_hidden_size, classifier_hidden_size // 2),
-                nn.ReLU(),
+                nn.GELU(),
                 nn.Dropout(dropout),
                 nn.Linear(classifier_hidden_size // 2, output_dim)
             )
+
             self.classifier.apply(self._init_weights)
         
         def _init_weights(self, module):
@@ -486,15 +500,29 @@ class Predictor:
         def forward(self, input_ids, attention_mask):
             # Get the BERT embeddings
             out = self.text_encoder(input_ids=input_ids, attention_mask=attention_mask)
+
+            # BERT's pooled output (derived from CLS token, processed for classification tasks)
+            bert_cls_pooled_output = out.pooler_output # Shape: (batch_size, bert_hidden_size)
+
             # get sequence output from BERT for use in LSTM
             sequence_output = out.last_hidden_state
-            # pass the sequence output through the LSTM
-            # sequence_output shape: (batch_size, seq_len, hidden_size)
-            lstm_out, _ = self.lstm(sequence_output)
-            lstm_pooled_output = lstm_out[:, 0, :]
-            # pass the LSTM output through the classifier
-            # compute the logits
-            output = self.classifier(lstm_pooled_output)
+
+            # Pass the full sequence output through the LSTM
+            lstm_out, _ = self.lstm(sequence_output) # lstm_out shape: (batch_size, seq_len, lstm_hidden_size * 2)
+            
+            # Get LSTM's output corresponding to the first token position (CLS token's position)
+            lstm_first_token_output = lstm_out[:, 0, :] # Shape: (batch_size, lstm_hidden_size * 2)
+
+            # Concatenate BERT's direct CLS pooled output with LSTM's output for the first token
+            combined_features = torch.cat((bert_cls_pooled_output, lstm_first_token_output), dim=1)
+
+            # Pass the combined features through the classifier
+            output = self.classifier(combined_features) # Shape: (batch_size, output_dim)
+
+            # # pass the LSTM output through the classifier
+            # # compute the logits
+            # output = self.classifier(lstm_first_token_output) # Shape: (batch_size, output_dim)
+
             # compute probabilities and class values
             prob = torch.sigmoid(output)
             class_value = torch.round(prob)
