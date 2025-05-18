@@ -20,6 +20,8 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import time
 
+import nltk
+
 from checkpoint_utils import save_checkpoint, load_checkpoint
 
 def parse_args():
@@ -29,12 +31,13 @@ def parse_args():
     parser.add_argument("--results_path", required=True, help="Output directory")
     parser.add_argument("--debug", action="store_true", help="Enable debug mode")
     parser.add_argument("--no_freeze", action="store_true", help="Do not freeze the text encoder parameters")
-
+    parser.add_argument("--load_model_dir", default=None, help="Directory to load the model from")
+    
     args = parser.parse_args()
 
-    return args.dataset_path, args.results_path, args.debug, args.no_freeze
+    return args.dataset_path, args.results_path, args.debug, args.no_freeze, args.load_model_dir
 
-DATADIR, RESULTS_DIR, DEBUG, NO_FREEZE = parse_args()
+DATADIR, RESULTS_DIR, DEBUG, NO_FREEZE, LOAD_MODEL = parse_args()
 DATETIME = time.strftime("%Y-%m-%d_%H-%M-%S")
 current_results_dir = Path(RESULTS_DIR) / DATETIME
 print(f"Logging results to {current_results_dir}")
@@ -60,8 +63,15 @@ class Predictor:
         # configuration file
         self._read_config(cfg_file)
 
+        #download modules necessary for text preprocessing, i.e. stopwords, punctuation
+        nltk.download('punkt')
+        nltk.download('stopwords')
+        nltk.download('wordnet')
+        nltk.download('punkt_tab')
+
         # tokenizer
-        self.tokenizer = BertTokenizer.from_pretrained("bert-base-uncased")
+        self.tokenizer = BertTokenizer.from_pretrained("GroNLP/hateBERT")
+        # self.tokenizer = BertTokenizer.from_pretrained("bert-base-uncased")
 
         # text encoder
         # self.text_encoder = BertModel.from_pretrained("GroNLP/hateBERT")
@@ -198,10 +208,24 @@ class Predictor:
         all_text_data = []
         all_labels = []
 
-        # Load and concatenate data from all specified CSV files
+        # Load and concatenate data from all specified CSV or TSV files
         for data_file in data_files:
             print(f"Loading data from {data_file}...")
-            df = pd.read_csv(data_file)
+            
+            # Determine the file extension
+            _, ext = os.path.splitext(data_file)
+            
+            # Choose the correct separator
+            if ext == ".tsv":
+                sep = "\t"
+            elif ext == ".csv":
+                sep = ","
+            else:
+                raise ValueError(f"Unsupported file format: {ext}")
+
+            # Read file with appropriate separator
+            df = pd.read_csv(data_file, sep=sep)
+
             # Drop rows with missing text or label and reset index
             df = df.dropna(subset=["text", "label"]).reset_index(drop=True)
             text_data = df["text"]
@@ -216,6 +240,22 @@ class Predictor:
 
             all_text_data.extend(text_data.tolist())
             all_labels.extend(labels.tolist())
+        
+        # Preprocess the text data
+        all_text_data = [text.replace("\n", " ") for text in all_text_data]  # Replace newlines with spaces
+        all_text_data = [text.replace("\r", " ") for text in all_text_data]  # Replace carriage returns with spaces
+        all_text_data = [text.replace("\t", " ") for text in all_text_data]  # Replace tabs with spaces
+        all_text_data = [text.replace("  ", " ") for text in all_text_data]  # Replace double spaces with single space
+        all_text_data = [text.strip() for text in all_text_data]  # Strip leading/trailing spaces
+        # Remove @mentions and URLs
+        all_text_data = [text.replace("@", "") for text in all_text_data]  # Remove @mentions
+        all_text_data = [text.replace("http", "") for text in all_text_data]  # Remove URLs
+        all_text_data = [text.replace("https", "") for text in all_text_data]  # Remove URLs
+        all_text_data = [text.replace("www", "") for text in all_text_data]  # Remove URLs
+        all_text_data = [text.replace(":", "") for text in all_text_data]  # Remove URLs
+        all_text_data = [text.replace(";", "") for text in all_text_data]  # Remove URLs
+        all_text_data = [text.replace("!", "") for text in all_text_data]  # Remove URLs
+        all_text_data = [text.replace("?", "") for text in all_text_data]  # Remove URLs
         
         if self.debug:
             print(f"Debug mode is ON. Limiting dataset size to {self.samples_debug} samples.")
@@ -476,7 +516,9 @@ class Predictor:
                 # nn.Linear(lstm_output_size, classifier_hidden_size),
                 nn.LayerNorm(classifier_hidden_size),
                 nn.GELU(),
+                nn.Dropout(dropout),
                 nn.Linear(classifier_hidden_size, classifier_hidden_size // 2),
+                nn.LayerNorm(classifier_hidden_size // 2),
                 nn.GELU(),
                 nn.Dropout(dropout),
                 nn.Linear(classifier_hidden_size // 2, output_dim)
@@ -569,32 +611,53 @@ if __name__ == "__main__":
             sys.stdout = log_file
             sys.stderr = error_log_file
 
-            # Now, all print statements and errors will go to these files
+            if LOAD_MODEL is not None:
+                print("Running the model after training...")
 
-            # Entry point for the script
-            # Instantiate the Predictor class
-            # Pass the list of data files found in the data_dir
-            predictor = Predictor(config_file, data_files)
+                predictor = Predictor(config_file, data_files)
+                predictor.load_model(Path(LOAD_MODEL) / "best_model.pth")
 
-            # Train the model
-            print("Starting model training...")
-            predictor.train_model()
-            print("Training finished.")
+                print(f"Model loaded from {LOAD_MODEL}")
 
-            # Load the best saved model
-            # Construct the path to the best model file within the timestamped results directory
-            best_model_path_for_loading = Path(current_results_dir) / "best_model.pth"
-            print(f"Loading best model from {best_model_path_for_loading}")
-            predictor.load_model(best_model_path_for_loading) # Pass full path
+                # Example prediction on a new text
+                text_to_predict = ["Nowadays, all of the problems in America are caused",
+                                   "You know, women are",
+                                   "I don't like"]
+                for phrase in text_to_predict:
+                    print(f"\nMaking prediction for: '{phrase}'")
+                    prob, class_value = predictor.predict(phrase)
+                    print(f"Prediction Result:")
+                    # Accessing the single value from the numpy arrays
+                    print(f"Probability: {prob}, Predicted Class: {int(class_value)}")
 
-            # Example prediction on a new text
-            text_to_predict = "This is a sample text for prediction after training."
-            text_to_predict = "You are a fucking "
-            print(f"\nMaking prediction for: '{text_to_predict}'")
-            prob, class_value = predictor.predict(text_to_predict)
-            print(f"Prediction Result:")
-            # Accessing the single value from the numpy arrays
-            print(f"Probability: {prob}, Predicted Class: {int(class_value)}")
+            else:
+
+                # Now, all print statements and errors will go to these files
+
+                # Entry point for the script
+                # Instantiate the Predictor class
+                # Pass the list of data files found in the data_dir
+                predictor = Predictor(config_file, data_files)
+
+                # Train the model
+                print("Starting model training...")
+                predictor.train_model()
+                print("Training finished.")
+
+                # Load the best saved model
+                # Construct the path to the best model file within the timestamped results directory
+                best_model_path_for_loading = Path(current_results_dir) / "best_model.pth"
+                print(f"Loading best model from {best_model_path_for_loading}")
+                predictor.load_model(best_model_path_for_loading) # Pass full path
+
+                # Example prediction on a new text
+                text_to_predict = "This is a sample text for prediction after training."
+                text_to_predict = "You are a fucking "
+                print(f"\nMaking prediction for: '{text_to_predict}'")
+                prob, class_value = predictor.predict(text_to_predict)
+                print(f"Prediction Result:")
+                # Accessing the single value from the numpy arrays
+                print(f"Probability: {prob}, Predicted Class: {int(class_value)}")
 
     except Exception as e:
         # Print any unhandled exceptions to the error log file
