@@ -4,7 +4,7 @@ from torch.optim import Adam, AdamW
 from torch.utils.data import Dataset
 from torch.utils.data import DataLoader
 
-from transformers import BertModel, BertTokenizer
+from transformers import GPT2Model, GPT2Tokenizer, GPT2Config
 
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import f1_score, accuracy_score
@@ -15,6 +15,7 @@ import os
 import sys
 from pathlib import Path
 import argparse
+import glob
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -64,27 +65,28 @@ class Predictor:
         self._read_config(cfg_file)
 
         # tokenizer
-        self.tokenizer = BertTokenizer.from_pretrained("GroNLP/hateBERT")
-        # self.tokenizer = BertTokenizer.from_pretrained("bert-base-uncased")
+        self.tokenizer = GPT2Tokenizer.from_pretrained("gpt2")
+        # GPT2 does not have a default pad token, so we set it to the eos token
+        self.tokenizer.pad_token = self.tokenizer.eos_token
+        print(f"Tokenizer pad token set to: {self.tokenizer.pad_token}")
 
         # text encoder
-        # self.text_encoder = BertModel.from_pretrained("GroNLP/hateBERT")
-        self.text_encoder = BertModel.from_pretrained("bert-base-uncased")
+        self.text_encoder = GPT2Model.from_pretrained("gpt2")
 
-        if NO_FREEZE:
-            # require grad for all parameters
-            for param in self.text_encoder.parameters():
-                param.requires_grad = True
-            for param in self.text_encoder.pooler.parameters():
-                param.requires_grad = True
-        else:
-            # freeze all parameters except the pooler
-            for param in self.text_encoder.parameters():
+        # freeze initial layers of the GPT2 model based on config
+        if not NO_FREEZE:
+            freeze_encoder_layers = 2*self.text_encoder.config.n_layer // 3
+            print(f"Freezing the first {freeze_encoder_layers} layers of the GPT2 encoder.")
+            # Freeze embedding layer
+            for param in self.text_encoder.wte.parameters():
                 param.requires_grad = False
-            for param in self.text_encoder.pooler.parameters():
-                param.requires_grad = True
+            for param in self.text_encoder.wpe.parameters():
+                param.requires_grad = False
 
-        print(f"Text encoder model:\n{self.text_encoder}")
+            # Freeze specified number of transformer layers
+            for i in range(min(freeze_encoder_layers, len(self.text_encoder.h))):
+                for param in self.text_encoder.h[i].parameters():
+                    param.requires_grad = False
 
         # prediction model
         model = self.PredictionModel(
@@ -129,7 +131,6 @@ class Predictor:
                 {'params': decay_parameters, 'weight_decay': self.weight_decay},
                 {'params': no_decay_parameters, 'weight_decay': 0.0}
             ], lr=self.lr)
-            
 
         # criterion
         if self.loss_computation == "classes" or self.loss_computation == "probabilities":
@@ -177,7 +178,6 @@ class Predictor:
 
         # loss computation
         self.loss_computation = config.get("loss_computation", "logits")
-        self.loss_computation = "handcrafted"
 
         # debug
         self.debug = DEBUG
@@ -206,7 +206,6 @@ class Predictor:
     def _load_dataset(self, data_files):
         all_text_data = []
         all_labels = []
-        all_weights = []
 
         # Load and concatenate data from all specified CSV or TSV files
         for data_file in data_files:
@@ -227,29 +226,24 @@ class Predictor:
             df = pd.read_csv(data_file, sep=sep)
 
             # Drop rows with missing text or label and reset index
-            df = df.dropna(subset=["text", "label", "weight"]).reset_index(drop=True)
+            df = df.dropna(subset=["text", "label"]).reset_index(drop=True)
             text_data = df["text"]
             labels = df["label"].astype("float32")
-            weights = df["weight"].astype("float32")
 
             # Check if labels are within the [0, 1] range (assuming binary 0 or 1 labels)
             if not ((labels >= 0) & (labels <= 1)).all():
                  print(f"Warning: Labels in {data_file} contain values outside [0, 1]. Keeping only 0 and 1.")
                  labels = labels[labels.isin([0, 1])]
                  text_data = text_data[labels.index]
-                 weights = weights[labels.index]
-            
+
             # removing entries with empty text
             text_data = text_data[text_data.str.strip() != ""]
             labels = labels[text_data.index]
-            weights = weights[text_data.index]
-
 
             all_text_data.extend(text_data.tolist())
             all_labels.extend(labels.tolist())
-            all_weights.extend(weights.tolist())
         
-        # Preprocess the text data
+                # Preprocess the text data
         all_text_data = [text.replace("\n", " ") for text in all_text_data]  # Replace newlines with spaces
         all_text_data = [text.replace("\r", " ") for text in all_text_data]  # Replace carriage returns with spaces
         all_text_data = [text.replace("\t", " ") for text in all_text_data]  # Replace tabs with spaces
@@ -264,33 +258,36 @@ class Predictor:
         all_text_data = [text.replace(";", "") for text in all_text_data]  # Remove URLs
         all_text_data = [text.replace("\"", "") for text in all_text_data]  # Remove URLs
 
+        # remove empty strings and relative labels
+        all_labels = [label for text, label in zip(all_text_data, all_labels) if text.strip() != ""]
+        all_text_data = [text for text in all_text_data if text.strip() != ""]
+
         if self.debug:
             print(f"Debug mode is ON. Limiting dataset size to {self.samples_debug} samples.")
             # Limit the dataset size for debugging
             all_text_data = all_text_data[:self.samples_debug]
             all_labels = all_labels[:self.samples_debug]
-            all_weights = all_weights[:self.samples_debug]
 
         print(f"Total dataset size after combining: {len(all_text_data)}")
 
         # Perform train/validation split on the combined data
         # stratify=labels ensures that the proportion of labels is the same in train and val sets
-        train_texts, val_texts, train_labels, val_labels, train_weights, val_weights = train_test_split(
-            all_text_data, all_labels, all_weights, test_size=self.val_split_ratio, random_state=42, stratify=all_labels
+        train_texts, val_texts, train_labels, val_labels = train_test_split(
+            all_text_data, all_labels, test_size=self.val_split_ratio, random_state=42, stratify=all_labels
         )
 
         print(f"Train set size: {len(train_texts)}")
         print(f"Validation set size: {len(val_texts)}")
 
         # Instantiate dataset and dataloaders
-        train_dataset = self.TextDataset(train_texts, train_labels, train_weights, text_transform=self._tokenize_text, max_len=self.max_len)
+        train_dataset = self.TextDataset(train_texts, train_labels, text_transform=self._tokenize_text, max_len=self.max_len)
         train_loader = DataLoader(train_dataset, batch_size=self.batch_size, shuffle=True, collate_fn=self._collate_fn)
         
-        val_dataset = self.TextDataset(val_texts, val_labels, val_weights, text_transform=self._tokenize_text, max_len=self.max_len)
+        val_dataset = self.TextDataset(val_texts, val_labels, text_transform=self._tokenize_text, max_len=self.max_len)
         val_loader = DataLoader(val_dataset, batch_size=self.batch_size, shuffle=False, collate_fn=self._collate_fn)
 
         return train_loader, val_loader
-
+    
     def _train_epoch(self):
         self.model.train()
         epoch_loss = 0
@@ -309,14 +306,7 @@ class Predictor:
                 loss_per_element = self.criterion(logits, labels) # using logits directly (BCEWithLogitsLoss)
             # scale the loss by the weights
 
-            alpha = 6
-            beta = 0.8
-            mixing_weight = beta * alpha + (1 - beta) * weights
-            # upweight for contrasting low probabilities
-            # downweight for short length of prefix
-
-            # loss = (loss_per_element * weights).mean()
-            loss = (loss_per_element * mixing_weight).mean()
+            loss = (loss_per_element * weights).mean()
 
             # Backward pass and optimization
             loss.backward()
@@ -360,15 +350,8 @@ class Predictor:
                 else:
                     loss_per_element = self.criterion(logits, labels) # using logits directly (BCEWithLogitsLoss)
                 
-
-                alpha = 6
-                beta = 0.8
-                mixing_weight = beta * alpha + (1 - beta) * weights
-                # upweight for contrasting low probabilities
-                # downweight for short length of prefix
-
-                # loss = (loss_per_element * weights).mean()
-                loss = (loss_per_element * mixing_weight).mean()
+                # scale the loss by the weights
+                loss = (loss_per_element * weights).mean()
 
                 # Accumulate loss
                 epoch_loss += loss.item()
@@ -387,20 +370,16 @@ class Predictor:
         return epoch_loss, epoch_metrics
     
     def _f1(self, preds, target):
-        preds = np.round(np.array(preds)).astype(int)
-        target = np.round(np.array(target)).astype(int)
         return f1_score(target, preds, average='macro')
 
     def _acc(self, preds, target):
-        preds = np.round(np.array(preds)).astype(int)
-        target = np.round(np.array(target)).astype(int)
         return accuracy_score(target, preds)
 
     def _plot_training(self, train_loss, test_loss, metrics_names, train_metrics_logs, test_metrics_logs):
         fig, ax = plt.subplots(1, len(metrics_names) + 2, figsize=((len(metrics_names) + 2) * 5, 5))
         
         # join loss computation with date and time
-        title = "BERT_RNN - handcrafted_data: " + str(self.loss_computation) + " -- " + DATETIME
+        title = "GPT2: " + str(self.loss_computation) + " -- " + DATETIME
         fig.suptitle(title, fontsize=16)
 
         textstr = "\n".join((
@@ -557,13 +536,13 @@ class Predictor:
         return prob.cpu().numpy(), class_value.cpu().numpy()
 
     class PredictionModel(nn.Module):
-        def __init__(self, text_encoder, classifier_hidden_size, lstm_hidden_size, lstm_layers, dropout, output_dim):
+        def __init__(self, text_encoder, classifier_hidden_size, dropout, output_dim):
             super().__init__()
             self.text_encoder = text_encoder
             self.lstm_hidden_size = lstm_hidden_size
 
             self.lstm = nn.LSTM(
-                input_size=self.text_encoder.config.hidden_size, # input size is the dimension of BERT's token embeddings
+                input_size=GPT2Config.from_pretrained("gpt2").hidden_size, # input size is the dimension of BERT's token embeddings
                 hidden_size=lstm_hidden_size, # LSTM hidden state size
                 batch_first=True, # input tensors are (batch_size, seq_len, input_size)
                 bidirectional=True, # use a bidirectional LSTM
@@ -574,29 +553,17 @@ class Predictor:
             # the output size of a bidirectional LSTM is 2 * hidden_size
             lstm_output_size = lstm_hidden_size * 2
 
-            # self.classifier = nn.Sequential(
-            #     nn.Linear(self.text_encoder.config.hidden_size + lstm_output_size, classifier_hidden_size),
-            #     # nn.Linear(lstm_output_size, classifier_hidden_size),
-            #     nn.ReLU(),
-            #     nn.Linear(classifier_hidden_size, classifier_hidden_size // 2),
-            #     nn.ReLU(),
-            #     nn.Dropout(dropout),
-            #     nn.Linear(classifier_hidden_size // 2, output_dim)
-            # )
-
             self.classifier = nn.Sequential(
-                # nn.Linear(self.text_encoder.config.hidden_size + lstm_output_size, classifier_hidden_size),
-                nn.Linear(lstm_output_size, classifier_hidden_size),
-                nn.LayerNorm(classifier_hidden_size),
+                nn.Linear(lstm_output_size classifier_hidden_size),
+                #nn.LayerNorm(classifier_hidden_size),
                 nn.GELU(),
                 nn.Dropout(dropout),
                 nn.Linear(classifier_hidden_size, classifier_hidden_size // 2),
-                nn.LayerNorm(classifier_hidden_size // 2),
+                #nn.LayerNorm(classifier_hidden_size // 2),
                 nn.GELU(),
                 nn.Dropout(dropout),
                 nn.Linear(classifier_hidden_size // 2, output_dim)
             )
-
             self.classifier.apply(self._init_weights)
         
         def _init_weights(self, module):
@@ -644,9 +611,8 @@ class Predictor:
             return output, prob, class_value
         
     class TextDataset(Dataset):
-        def __init__(self, text_data, labels, weights, text_transform=None, max_len=512):
+        def __init__(self, text_data, labels, text_transform=None, max_len=512):
             self.text_data = text_data
-            self.weights = weights
             self.labels = labels
             self.text_transform = text_transform
             self.max_len = max_len
@@ -656,11 +622,29 @@ class Predictor:
 
         def __getitem__(self, idx):
             # Tokenize and preprocess text
-            text = self.text_data[idx]
-            weight = self.weights[idx]
+            text_item = self.text_data[idx] # Renamed to avoid confusion with the 'text' variable later
+
+            words = text_item.split()
+            length = len(words)
             
+            current_text_for_tokenizer = "" # Default to empty string
+            weight = 0.0 # Default weight
+
+            if length > 0:
+                # Ensure divider is at least 1 and at most length
+                divider = np.random.randint(1, length + 1)
+                current_text_for_tokenizer = "".join(words[:divider]) # take the prefix
+                # Calculate weight, ensure no division by zero if length was 0 (though handled by if)
+                weight = (np.exp(3 * divider / length) - 1) / (np.exp(3) - 1) if length > 0 else 0.0
+            # else:
+                # If length is 0, current_text_for_tokenizer remains "" and weight remains 0.0
+                # This means an empty string will be tokenized.
+                # print(f"Warning: Empty text encountered at index {idx}: '{text_item}'", file=sys.stderr) # Optional: for debugging
+
+            input_ids, attention_mask = torch.empty(0, dtype=torch.long), torch.empty(0, dtype=torch.long) # Defaults for safety
             if self.text_transform:
-                input_ids, attention_mask = self.text_transform(text)
+                # self._tokenize_text should handle empty strings gracefully (e.g., return CLS, SEP tokens)
+                input_ids, attention_mask = self.text_transform(current_text_for_tokenizer)
 
             label = self.labels[idx]
             return input_ids, attention_mask, label, weight
@@ -681,7 +665,7 @@ if __name__ == "__main__":
             sys.stdout = log_file
             sys.stderr = error_log_file
 
-            if LOAD_MODEL is not None and not FINETUNE:
+            if LOAD_MODEL is not None:
                 print("Running the model after training...")
 
                 predictor = Predictor(config_file, data_files)
@@ -694,7 +678,7 @@ if __name__ == "__main__":
                                    "You know, women are",
                                    "I don't like",
                                    "I don't like the way you talk to me",
-                                   "I think that black",
+                                   "I think that black"
                                    "In the 70s, women",
                                    "I like cats and ",
                                    "Given the current state of the economy, I think",
@@ -705,42 +689,8 @@ if __name__ == "__main__":
                     print(f"Prediction Result:")
                     # Accessing the single value from the numpy arrays
                     print(f"Probability: {prob}, Predicted Class: {int(class_value)}")
-            
-            elif LOAD_MODEL is not None and FINETUNE:
-                print(f"--- Mode: Fine-tuning ---")
-                print(f"Initializing model structure for fine-tuning...")
-                # Instantiate Predictor, which sets up model structure and optimizer
-                predictor = Predictor(config_file, data_files)
-                
-                model_path_to_finetune = Path(LOAD_MODEL) / "best_model.pth"
-
-                if os.path.exists(model_path_to_finetune):
-                    print(f"Loading model weights from {model_path_to_finetune} for fine-tuning...")
-                    predictor.load_model(model_path_to_finetune) # Loads weights into self.model
-                else:
-                    raise FileNotFoundError(f"Model to fine-tune not found at {model_path_to_finetune}")
-
-                print("Starting fine-tuning process...")
-                predictor.train_model() # Train the loaded model
-                print("Fine-tuning finished.")
-
-                # After fine-tuning, load the newly saved best model from the current run for prediction
-                best_model_path_after_finetune = Path(current_results_dir) / "best_model.pth"
-                if os.path.exists(best_model_path_after_finetune):
-                    print(f"Loading best model from current fine-tuning run: {best_model_path_after_finetune}")
-                    predictor.load_model(best_model_path_after_finetune) # Load the model saved by this fine-tuning run
-                    # Example prediction (you can expand this)
-                    text_to_predict = "You are a fucking "
-                    print(f"\nMaking prediction for: '{text_to_predict}'")
-                    prob, class_value = predictor.predict(text_to_predict)
-                    print(f"Prediction Result:")
-                    # Accessing the single value from the numpy arrays
-                    print(f"Probability: {prob}, Predicted Class: {int(class_value)}")
-                else:
-                    print(f"No best model found at {best_model_path_after_finetune} after fine-tuning session.")
 
             else:
-
                 # Now, all print statements and errors will go to these files
 
                 # Entry point for the script

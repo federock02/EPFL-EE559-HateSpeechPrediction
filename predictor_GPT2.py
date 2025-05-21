@@ -20,8 +20,9 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import time
+import csv
 
-from utils.checkpoint_utils import save_checkpoint, load_checkpoint
+from checkpoint_utils import save_checkpoint, load_checkpoint
 
 def parse_args():
     # when working with python files from console it's better to specify
@@ -31,12 +32,13 @@ def parse_args():
     parser.add_argument("--debug", action="store_true", help="Enable debug mode")
     parser.add_argument("--no_freeze", action="store_true", help="Do not freeze the text encoder parameters")
     parser.add_argument("--load_model_dir", default=None, help="Directory to load the model from")
+    parser.add_argument("--finetune", action="store_true", help="Enable finetuning from loaded model")
 
     args = parser.parse_args()
 
-    return args.dataset_path, args.results_path, args.debug, args.no_freeze, args.load_model_dir
+    return args.dataset_path, args.results_path, args.debug, args.no_freeze, args.load_model_dir, args.finetune
 
-DATADIR, RESULTS_DIR, DEBUG, NO_FREEZE, LOAD_MODEL = parse_args()
+DATADIR, RESULTS_DIR, DEBUG, NO_FREEZE, LOAD_MODEL, FINETUNE = parse_args()
 DATETIME = time.strftime("%Y-%m-%d_%H-%M-%S")
 current_results_dir = Path(RESULTS_DIR) / DATETIME
 print(f"Logging results to {current_results_dir}")
@@ -247,6 +249,10 @@ class Predictor:
         all_text_data = [text.replace("https", "") for text in all_text_data]  # Remove URLs
         all_text_data = [text.replace("www", "") for text in all_text_data]  # Remove URLs
         
+        # remove empty strings and relative labels
+        all_labels = [label for text, label in zip(all_text_data, all_labels) if text.strip() != ""]
+        all_text_data = [text for text in all_text_data if text.strip() != ""]
+        
         if self.debug:
             print(f"Debug mode is ON. Limiting dataset size to {self.samples_debug} samples.")
             # Limit the dataset size for debugging
@@ -370,7 +376,11 @@ class Predictor:
         textstr = "\n".join((
             "learning rate: %.5f" % (self.lr, ),
             "batch size: %d" % (self.batch_size, ),
-            "patience: %d" % (self.patience, )))
+            "patience: %d" % (self.patience, ),
+            "weight decay: %.5f" % (self.weight_decay, ),
+            "max grad norm: %.2f" % (self.max_grad_norm, ),
+            "classifier_hidden_size: %d" % (self.classifier_hidden_size, ),
+            "dropout: %.2f" % (self.dropout, )))
 
         ax[0].plot(train_loss, c='blue', label='train')
         ax[0].plot(test_loss, c='orange', label='validation')
@@ -412,49 +422,87 @@ class Predictor:
         epochs_without_improvement = 0
 
         tqdm_log_file_path = Path(current_results_dir) / "tqdm_progress.log"
-        self.tqdm_log_file = open(tqdm_log_file_path, 'w')
-        for epoch in range(self.epochs):
-            train_loss, train_metrics = self._train_epoch()
-            train_loss_log.append(train_loss)
-            train_metrics_log = self._update_metrics_log(metrics_names, train_metrics_log, train_metrics)
+        plotting_csv_path = Path(current_results_dir) / "plotting.csv"
+        # Open files and ensure they are closed properly
+        try:
+            self.tqdm_log_file = open(tqdm_log_file_path, 'w')
+            with open(plotting_csv_path, 'w', newline='') as plot_log_csv_file: # Open CSV file
+                csv_writer = csv.writer(plot_log_csv_file)
+                # Write header to CSV
+                header = ['epoch', 'train_loss', 'val_loss']
+                for name in metrics_names:
+                    header.append(f'train_{name}')
+                for name in metrics_names:
+                    header.append(f'val_{name}')
+                csv_writer.writerow(header)
 
-            val_loss, val_metrics = self._evaluate_epoch()
-            val_loss_log.append(val_loss)
-            val_metrics_log = self._update_metrics_log(metrics_names, val_metrics_log, val_metrics)
-            accuracy = val_metrics["accuracy"]
-            print(f"Epoch {epoch+1}/{self.epochs}, Train Loss: {train_loss:.4f}, Val Loss: {val_loss:.4f}, Accuracy: {accuracy:.4f}")
+                for epoch in range(self.epochs):
+                    train_loss, train_metrics = self._train_epoch()
+                    train_loss_log.append(train_loss)
+                    train_metrics_log = self._update_metrics_log(metrics_names, train_metrics_log, train_metrics)
 
-            self._plot_training(train_loss_log, val_loss_log, metrics_names, train_metrics_log, val_metrics_log)
+                    val_loss, val_metrics = self._evaluate_epoch()
+                    val_loss_log.append(val_loss)
+                    val_metrics_log = self._update_metrics_log(metrics_names, val_metrics_log, val_metrics)
+                    accuracy = val_metrics["accuracy"] # Assuming "accuracy" is always in val_metrics
+                    
+                    # Prepare data row for CSV
+                    # Ensure metrics_names order matches the one used for header: f1, then accuracy
+                    # train_metrics and val_metrics are dictionaries
+                    row_data = [epoch + 1, f"{train_loss:.4f}", f"{val_loss:.4f}"]
+                    for name in metrics_names: # train_f1, train_accuracy
+                        row_data.append(f"{train_metrics.get(name, 0.0):.4f}")
+                    for name in metrics_names: # val_f1, val_accuracy
+                        row_data.append(f"{val_metrics.get(name, 0.0):.4f}")
+                    csv_writer.writerow(row_data)
+                    plot_log_csv_file.flush() # Ensure data is written to disk immediately
 
-            # --- Early Stopping Logic ---
-            if accuracy > best_val_score:
-                best_val_score = accuracy
-                epochs_without_improvement = 0 # Reset counter
-                # Save the model if the accuracy is improved
-                best_model_path = Path(current_results_dir) / "best_model.pth"
-                torch.save(self.model.state_dict(), best_model_path)
-                print(f"Model saved to {best_model_path} with improved accuracy: {accuracy:.4f}")
+                    print(f"Epoch {epoch+1}/{self.epochs}, Train Loss: {train_loss:.4f}, Val Loss: {val_loss:.4f}, Accuracy: {accuracy:.4f}")
 
-            else:
-                epochs_without_improvement += 1 # Increment counter
-                print(f"Validation accuracy did not improve. Epochs without improvement: {epochs_without_improvement}")
+                    self._plot_training(train_loss_log, val_loss_log, metrics_names, train_metrics_log, val_metrics_log)
 
-            # Check for early stopping
-            if epochs_without_improvement >= self.patience:
-                print(f"Early stopping triggered after {self.patience} epochs without improvement.")
-                break # Exit the training loop
-            # --- End Early Stopping Logic ---
-            
-            save_checkpoint(self.model, self.optimizer, epoch, loss=train_loss, checkpoint_path = Path(current_results_dir) / "checkpoints/checkpoint.pth", store_checkpoint_for_every_epoch=store_checkpoint_for_every_epoch)
-                        
-            time_so_far = time.time() - start_time
-            expected_time = time_so_far / (epoch + 1) * (self.epochs - epoch - 1)
-            print(f"Time elapsed: {time_so_far:.2f}s, Expected time remaining: {expected_time:.2f}s")
+                    # --- Early Stopping Logic ---
+                    if accuracy > best_val_score:
+                        best_val_score = accuracy
+                        epochs_without_improvement = 0 # Reset counter
+                        # Save the model if the accuracy is improved
+                        best_model_path = Path(current_results_dir) / "best_model.pth"
+                        torch.save(self.model.state_dict(), best_model_path)
+                        print(f"Model saved to {best_model_path} with improved accuracy: {accuracy:.4f}")
 
-            # flush log file
-            log_file.flush()
+                    else:
+                        epochs_without_improvement += 1 # Increment counter
+                        print(f"Validation accuracy did not improve. Epochs without improvement: {epochs_without_improvement}")
 
-        os.remove(tqdm_log_file_path)  # Remove the log file after training
+                    # Check for early stopping
+                    if epochs_without_improvement >= self.patience:
+                        print(f"Early stopping triggered after {self.patience} epochs without improvement.")
+                        break # Exit the training loop
+                    # --- End Early Stopping Logic ---
+                    
+                    save_checkpoint(self.model, self.optimizer, epoch, loss=train_loss, checkpoint_path = Path(current_results_dir) / "checkpoints/checkpoint.pth", store_checkpoint_for_every_epoch=store_checkpoint_for_every_epoch)
+                                
+                    time_so_far = time.time() - start_time
+                    expected_time = time_so_far / (epoch + 1) * (self.epochs - epoch - 1)
+                    print(f"Time elapsed: {time_so_far:.2f}s, Expected time remaining: {expected_time:.2f}s")
+
+                    # flush log file (assuming log_file is the one opened in __main__)
+                    # This part might need adjustment if log_file is not accessible here
+                    # or if you mean sys.stdout which is redirected to a file.
+                    # If sys.stdout is redirected, it's usually buffered, and flushing can be done via sys.stdout.flush()
+                    if sys.stdout.isatty() is False: # Check if stdout is redirected
+                         sys.stdout.flush()
+
+
+        finally:
+            if self.tqdm_log_file:
+                self.tqdm_log_file.close()
+                if os.path.exists(tqdm_log_file_path):
+                    try:
+                        os.remove(tqdm_log_file_path)  # Remove the log file after training
+                    except OSError as e:
+                        print(f"Error removing tqdm log file: {e}", file=sys.stderr) # Print to original stderr if possible
+            # self.plot_log_file is now plot_log_csv_file and managed by 'with open'
 
     def load_model(self, model_path):
         # Load the model state dict
@@ -527,15 +575,29 @@ class Predictor:
 
         def __getitem__(self, idx):
             # Tokenize and preprocess text
-            text = self.text_data[idx]
+            text_item = self.text_data[idx] # Renamed to avoid confusion with the 'text' variable later
 
-            length = len(text.split())
-            divider = np.random.randint(1, length+1)
-            text = " ".join(text.split()[:divider]) # take the prefix
-            weight = (np.exp(3*divider / length) - 1) / (np.exp(3) - 1)
+            words = text_item.split()
+            length = len(words)
             
+            current_text_for_tokenizer = "" # Default to empty string
+            weight = 0.0 # Default weight
+
+            if length > 0:
+                # Ensure divider is at least 1 and at most length
+                divider = np.random.randint(1, length + 1)
+                current_text_for_tokenizer = "".join(words[:divider]) # take the prefix
+                # Calculate weight, ensure no division by zero if length was 0 (though handled by if)
+                weight = (np.exp(3 * divider / length) - 1) / (np.exp(3) - 1) if length > 0 else 0.0
+            # else:
+                # If length is 0, current_text_for_tokenizer remains "" and weight remains 0.0
+                # This means an empty string will be tokenized.
+                # print(f"Warning: Empty text encountered at index {idx}: '{text_item}'", file=sys.stderr) # Optional: for debugging
+
+            input_ids, attention_mask = torch.empty(0, dtype=torch.long), torch.empty(0, dtype=torch.long) # Defaults for safety
             if self.text_transform:
-                input_ids, attention_mask = self.text_transform(text)
+                # self._tokenize_text should handle empty strings gracefully (e.g., return CLS, SEP tokens)
+                input_ids, attention_mask = self.text_transform(current_text_for_tokenizer)
 
             label = self.labels[idx]
             return input_ids, attention_mask, label, weight
@@ -569,7 +631,11 @@ if __name__ == "__main__":
                                    "You know, women are",
                                    "I don't like",
                                    "I don't like the way you talk to me",
-                                   "I think that black"]
+                                   "I think that black"
+                                   "In the 70s, women",
+                                   "I like cats and ",
+                                   "Given the current state of the economy, I think",
+                                   "My favourite "]
                 for phrase in text_to_predict:
                     print(f"\nMaking prediction for: '{phrase}'")
                     prob, class_value = predictor.predict(phrase)

@@ -20,8 +20,9 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import time
+import csv
 
-from utils.checkpoint_utils import save_checkpoint, load_checkpoint
+from checkpoint_utils import save_checkpoint, load_checkpoint
 
 def parse_args():
     # when working with python files from console it's better to specify
@@ -367,7 +368,11 @@ class Predictor:
         textstr = "\n".join((
             "learning rate: %.5f" % (self.lr, ),
             "batch size: %d" % (self.batch_size, ),
-            "patience: %d" % (self.patience, )))
+            "patience: %d" % (self.patience, ),
+            "weight decay: %.5f" % (self.weight_decay, ),
+            "max grad norm: %.2f" % (self.max_grad_norm, ),
+            "classifier_hidden_size: %d" % (self.classifier_hidden_size, ),
+            "dropout: %.2f" % (self.dropout, )))
 
         ax[0].plot(train_loss, c='blue', label='train')
         ax[0].plot(test_loss, c='orange', label='validation')
@@ -409,49 +414,87 @@ class Predictor:
         epochs_without_improvement = 0
 
         tqdm_log_file_path = Path(current_results_dir) / "tqdm_progress.log"
-        self.tqdm_log_file = open(tqdm_log_file_path, 'w')
-        for epoch in range(self.epochs):
-            train_loss, train_metrics = self._train_epoch()
-            train_loss_log.append(train_loss)
-            train_metrics_log = self._update_metrics_log(metrics_names, train_metrics_log, train_metrics)
+        plotting_csv_path = Path(current_results_dir) / "plotting.csv"
+        # Open files and ensure they are closed properly
+        try:
+            self.tqdm_log_file = open(tqdm_log_file_path, 'w')
+            with open(plotting_csv_path, 'w', newline='') as plot_log_csv_file: # Open CSV file
+                csv_writer = csv.writer(plot_log_csv_file)
+                # Write header to CSV
+                header = ['epoch', 'train_loss', 'val_loss']
+                for name in metrics_names:
+                    header.append(f'train_{name}')
+                for name in metrics_names:
+                    header.append(f'val_{name}')
+                csv_writer.writerow(header)
 
-            val_loss, val_metrics = self._evaluate_epoch()
-            val_loss_log.append(val_loss)
-            val_metrics_log = self._update_metrics_log(metrics_names, val_metrics_log, val_metrics)
-            accuracy = val_metrics["accuracy"]
-            print(f"Epoch {epoch+1}/{self.epochs}, Train Loss: {train_loss:.4f}, Val Loss: {val_loss:.4f}, Accuracy: {accuracy:.4f}")
+                for epoch in range(self.epochs):
+                    train_loss, train_metrics = self._train_epoch()
+                    train_loss_log.append(train_loss)
+                    train_metrics_log = self._update_metrics_log(metrics_names, train_metrics_log, train_metrics)
 
-            self._plot_training(train_loss_log, val_loss_log, metrics_names, train_metrics_log, val_metrics_log)
+                    val_loss, val_metrics = self._evaluate_epoch()
+                    val_loss_log.append(val_loss)
+                    val_metrics_log = self._update_metrics_log(metrics_names, val_metrics_log, val_metrics)
+                    accuracy = val_metrics["accuracy"] # Assuming "accuracy" is always in val_metrics
+                    
+                    # Prepare data row for CSV
+                    # Ensure metrics_names order matches the one used for header: f1, then accuracy
+                    # train_metrics and val_metrics are dictionaries
+                    row_data = [epoch + 1, f"{train_loss:.4f}", f"{val_loss:.4f}"]
+                    for name in metrics_names: # train_f1, train_accuracy
+                        row_data.append(f"{train_metrics.get(name, 0.0):.4f}")
+                    for name in metrics_names: # val_f1, val_accuracy
+                        row_data.append(f"{val_metrics.get(name, 0.0):.4f}")
+                    csv_writer.writerow(row_data)
+                    plot_log_csv_file.flush() # Ensure data is written to disk immediately
 
-            # --- Early Stopping Logic ---
-            if accuracy > best_val_score:
-                best_val_score = accuracy
-                epochs_without_improvement = 0 # Reset counter
-                # Save the model if the accuracy is improved
-                best_model_path = Path(current_results_dir) / "best_model.pth"
-                torch.save(self.model.state_dict(), best_model_path)
-                print(f"Model saved to {best_model_path} with improved accuracy: {accuracy:.4f}")
+                    print(f"Epoch {epoch+1}/{self.epochs}, Train Loss: {train_loss:.4f}, Val Loss: {val_loss:.4f}, Accuracy: {accuracy:.4f}")
 
-            else:
-                epochs_without_improvement += 1 # Increment counter
-                print(f"Validation accuracy did not improve. Epochs without improvement: {epochs_without_improvement}")
+                    self._plot_training(train_loss_log, val_loss_log, metrics_names, train_metrics_log, val_metrics_log)
 
-            # Check for early stopping
-            if epochs_without_improvement >= self.patience:
-                print(f"Early stopping triggered after {self.patience} epochs without improvement.")
-                break # Exit the training loop
-            # --- End Early Stopping Logic ---
-            
-            save_checkpoint(self.model, self.optimizer, epoch, loss=train_loss, checkpoint_path = Path(current_results_dir) / "checkpoints/checkpoint.pth", store_checkpoint_for_every_epoch=store_checkpoint_for_every_epoch)
-                        
-            time_so_far = time.time() - start_time
-            expected_time = time_so_far / (epoch + 1) * (self.epochs - epoch - 1)
-            print(f"Time elapsed: {time_so_far:.2f}s, Expected time remaining: {expected_time:.2f}s")
+                    # --- Early Stopping Logic ---
+                    if accuracy > best_val_score:
+                        best_val_score = accuracy
+                        epochs_without_improvement = 0 # Reset counter
+                        # Save the model if the accuracy is improved
+                        best_model_path = Path(current_results_dir) / "best_model.pth"
+                        torch.save(self.model.state_dict(), best_model_path)
+                        print(f"Model saved to {best_model_path} with improved accuracy: {accuracy:.4f}")
 
-            # flush log file
-            log_file.flush()
+                    else:
+                        epochs_without_improvement += 1 # Increment counter
+                        print(f"Validation accuracy did not improve. Epochs without improvement: {epochs_without_improvement}")
 
-        os.remove(tqdm_log_file_path)  # Remove the log file after training
+                    # Check for early stopping
+                    if epochs_without_improvement >= self.patience:
+                        print(f"Early stopping triggered after {self.patience} epochs without improvement.")
+                        break # Exit the training loop
+                    # --- End Early Stopping Logic ---
+                    
+                    save_checkpoint(self.model, self.optimizer, epoch, loss=train_loss, checkpoint_path = Path(current_results_dir) / "checkpoints/checkpoint.pth", store_checkpoint_for_every_epoch=store_checkpoint_for_every_epoch)
+                                
+                    time_so_far = time.time() - start_time
+                    expected_time = time_so_far / (epoch + 1) * (self.epochs - epoch - 1)
+                    print(f"Time elapsed: {time_so_far:.2f}s, Expected time remaining: {expected_time:.2f}s")
+
+                    # flush log file (assuming log_file is the one opened in __main__)
+                    # This part might need adjustment if log_file is not accessible here
+                    # or if you mean sys.stdout which is redirected to a file.
+                    # If sys.stdout is redirected, it's usually buffered, and flushing can be done via sys.stdout.flush()
+                    if sys.stdout.isatty() is False: # Check if stdout is redirected
+                         sys.stdout.flush()
+
+
+        finally:
+            if self.tqdm_log_file:
+                self.tqdm_log_file.close()
+                if os.path.exists(tqdm_log_file_path):
+                    try:
+                        os.remove(tqdm_log_file_path)  # Remove the log file after training
+                    except OSError as e:
+                        print(f"Error removing tqdm log file: {e}", file=sys.stderr) # Print to original stderr if possible
+            # self.plot_log_file is now plot_log_csv_file and managed by 'with open'
 
     def load_model(self, model_path):
         # Load the model state dict
@@ -567,7 +610,10 @@ if __name__ == "__main__":
                                    "I don't like",
                                    "I don't like the way you talk to me",
                                    "I think that black",
-                                   "In the 70s, women",]
+                                   "In the 70s, women",
+                                   "I like cats and ",
+                                   "Given the current state of the economy, I think",
+                                   "My favourite "]
                 for phrase in text_to_predict:
                     print(f"\nMaking prediction for: '{phrase}'")
                     prob, class_value = predictor.predict(phrase)
