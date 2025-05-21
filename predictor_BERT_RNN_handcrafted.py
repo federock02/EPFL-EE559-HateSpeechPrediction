@@ -32,7 +32,6 @@ def parse_args():
     parser.add_argument("--load_model_dir", default=None, help="Directory to load the model from")
     parser.add_argument("--finetune", action="store_true", help="Enable finetuning from loaded model")
 
-
     args = parser.parse_args()
 
     return args.dataset_path, args.results_path, args.debug, args.no_freeze, args.load_model_dir, args.finetune
@@ -64,8 +63,8 @@ class Predictor:
         self._read_config(cfg_file)
 
         # tokenizer
-        # self.tokenizer = BertTokenizer.from_pretrained("GroNLP/hateBERT")
-        self.tokenizer = BertTokenizer.from_pretrained("bert-base-uncased")
+        self.tokenizer = BertTokenizer.from_pretrained("GroNLP/hateBERT")
+        # self.tokenizer = BertTokenizer.from_pretrained("bert-base-uncased")
 
         # text encoder
         # self.text_encoder = BertModel.from_pretrained("GroNLP/hateBERT")
@@ -175,6 +174,7 @@ class Predictor:
 
         # loss computation
         self.loss_computation = config.get("loss_computation", "logits")
+        self.loss_computation = "handcrafted"
 
         # debug
         self.debug = DEBUG
@@ -203,6 +203,7 @@ class Predictor:
     def _load_dataset(self, data_files):
         all_text_data = []
         all_labels = []
+        all_weights = []
 
         # Load and concatenate data from all specified CSV or TSV files
         for data_file in data_files:
@@ -226,6 +227,7 @@ class Predictor:
             df = df.dropna(subset=["text", "label"]).reset_index(drop=True)
             text_data = df["text"]
             labels = df["label"].astype("float32")
+            weights = df["weight"].astype("float32")
 
             # Check if labels are within the [0, 1] range (assuming binary 0 or 1 labels)
             if not ((labels >= 0) & (labels <= 1)).all():
@@ -240,6 +242,7 @@ class Predictor:
 
             all_text_data.extend(text_data.tolist())
             all_labels.extend(labels.tolist())
+            all_weights.extend(weights.tolist())
         
         # Preprocess the text data
         all_text_data = [text.replace("\n", " ") for text in all_text_data]  # Replace newlines with spaces
@@ -261,27 +264,28 @@ class Predictor:
             # Limit the dataset size for debugging
             all_text_data = all_text_data[:self.samples_debug]
             all_labels = all_labels[:self.samples_debug]
+            all_weights = all_weights[:self.samples_debug]
 
         print(f"Total dataset size after combining: {len(all_text_data)}")
 
         # Perform train/validation split on the combined data
         # stratify=labels ensures that the proportion of labels is the same in train and val sets
-        train_texts, val_texts, train_labels, val_labels = train_test_split(
-            all_text_data, all_labels, test_size=self.val_split_ratio, random_state=42, stratify=all_labels
+        train_texts, val_texts, train_labels, val_labels, train_weights, val_weights = train_test_split(
+            all_text_data, all_labels, all_weights, test_size=self.val_split_ratio, random_state=42, stratify=all_labels
         )
 
         print(f"Train set size: {len(train_texts)}")
         print(f"Validation set size: {len(val_texts)}")
 
         # Instantiate dataset and dataloaders
-        train_dataset = self.TextDataset(train_texts, train_labels, text_transform=self._tokenize_text, max_len=self.max_len)
+        train_dataset = self.TextDataset(train_texts, train_labels, train_weights, text_transform=self._tokenize_text, max_len=self.max_len)
         train_loader = DataLoader(train_dataset, batch_size=self.batch_size, shuffle=True, collate_fn=self._collate_fn)
         
-        val_dataset = self.TextDataset(val_texts, val_labels, text_transform=self._tokenize_text, max_len=self.max_len)
+        val_dataset = self.TextDataset(val_texts, val_labels, val_weights, text_transform=self._tokenize_text, max_len=self.max_len)
         val_loader = DataLoader(val_dataset, batch_size=self.batch_size, shuffle=False, collate_fn=self._collate_fn)
 
         return train_loader, val_loader
-    
+
     def _train_epoch(self):
         self.model.train()
         epoch_loss = 0
@@ -300,7 +304,14 @@ class Predictor:
                 loss_per_element = self.criterion(logits, labels) # using logits directly (BCEWithLogitsLoss)
             # scale the loss by the weights
 
-            loss = (loss_per_element * weights).mean()
+            alpha = 2
+            beta = 0.75
+            mixing_weight = beta * alpha + (1 - beta) * weights
+            # upweight for contrasting low probabilities
+            # downweight for short length of prefix
+
+            # loss = (loss_per_element * weights).mean()
+            loss = (loss_per_element * mixing_weight).mean()
 
             # Backward pass and optimization
             loss.backward()
@@ -344,8 +355,15 @@ class Predictor:
                 else:
                     loss_per_element = self.criterion(logits, labels) # using logits directly (BCEWithLogitsLoss)
                 
-                # scale the loss by the weights
-                loss = (loss_per_element * weights).mean()
+
+                alpha = 2
+                beta = 0.75
+                mixing_weight = beta * alpha + (1 - beta) * weights
+                # upweight for contrasting low probabilities
+                # downweight for short length of prefix
+
+                # loss = (loss_per_element * weights).mean()
+                loss = (loss_per_element * mixing_weight).mean()
 
                 # Accumulate loss
                 epoch_loss += loss.item()
@@ -364,16 +382,20 @@ class Predictor:
         return epoch_loss, epoch_metrics
     
     def _f1(self, preds, target):
+        preds = np.round(np.array(preds)).astype(int)
+        target = np.round(np.array(target)).astype(int)
         return f1_score(target, preds, average='macro')
 
     def _acc(self, preds, target):
+        preds = np.round(np.array(preds)).astype(int)
+        target = np.round(np.array(target)).astype(int)
         return accuracy_score(target, preds)
 
     def _plot_training(self, train_loss, test_loss, metrics_names, train_metrics_logs, test_metrics_logs):
         fig, ax = plt.subplots(1, len(metrics_names) + 2, figsize=((len(metrics_names) + 2) * 5, 5))
         
         # join loss computation with date and time
-        title = "BERT_RNN: " + str(self.loss_computation) + " -- " + DATETIME
+        title = "BERT_RNN - handcrafted_data: " + str(self.loss_computation) + " -- " + DATETIME
         fig.suptitle(title, fontsize=16)
 
         textstr = "\n".join((
@@ -570,8 +592,9 @@ class Predictor:
             return output, prob, class_value
         
     class TextDataset(Dataset):
-        def __init__(self, text_data, labels, text_transform=None, max_len=512):
+        def __init__(self, text_data, labels, weights, text_transform=None, max_len=512):
             self.text_data = text_data
+            self.weights = weights
             self.labels = labels
             self.text_transform = text_transform
             self.max_len = max_len
@@ -582,11 +605,7 @@ class Predictor:
         def __getitem__(self, idx):
             # Tokenize and preprocess text
             text = self.text_data[idx]
-
-            length = len(text.split())
-            divider = np.random.randint(1, length+1)
-            text = " ".join(text.split()[:divider]) # take the prefix
-            weight = (np.exp(3*divider / length) - 1) / (np.exp(3) - 1)
+            weight = self.weights[idx]
             
             if self.text_transform:
                 input_ids, attention_mask = self.text_transform(text)

@@ -21,7 +21,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import time
 
-from checkpoint_utils import save_checkpoint, load_checkpoint
+from utils.checkpoint_utils import save_checkpoint, load_checkpoint
 
 import optuna
 
