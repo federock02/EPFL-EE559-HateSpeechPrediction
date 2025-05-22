@@ -20,6 +20,7 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import time
+import csv
 
 from checkpoint_utils import save_checkpoint, load_checkpoint
 
@@ -29,13 +30,16 @@ def parse_args():
     parser.add_argument("--dataset_path", required=True, help="Dataset path")
     parser.add_argument("--results_path", required=True, help="Output directory")
     parser.add_argument("--debug", action="store_true", help="Enable debug mode")
-    parser.add_argument("--no_freeze", action="store_true", help="Do not freeze the text encoder")
+    parser.add_argument("--no_freeze", action="store_true", help="Do not freeze the text encoder parameters")
+    parser.add_argument("--load_model_dir", default=None, help="Directory to load the model from")
+    parser.add_argument("--finetune", action="store_true", help="Enable finetuning from loaded model")
+
 
     args = parser.parse_args()
 
-    return args.dataset_path, args.results_path, args.debug, args.no_freeze
+    return args.dataset_path, args.results_path, args.debug, args.no_freeze, args.load_model_dir, args.finetune
 
-DATADIR, RESULTS_DIR, DEBUG, NO_FREEZE = parse_args()
+DATADIR, RESULTS_DIR, DEBUG, NO_FREEZE, LOAD_MODEL, FINETUNE = parse_args()
 DATETIME = time.strftime("%Y-%m-%d_%H-%M-%S")
 current_results_dir = Path(RESULTS_DIR) / DATETIME
 print(f"Logging results to {current_results_dir}")
@@ -338,7 +342,14 @@ class Predictor:
         textstr = "\n".join((
             "learning rate: %.5f" % (self.lr, ),
             "batch size: %d" % (self.batch_size, ),
-            "patience: %d" % (self.patience, )))
+            "patience: %d" % (self.patience, ),
+            "weight decay: %.5f" % (self.weight_decay, ),
+            "max grad norm: %.2f" % (self.max_grad_norm, ),
+            "lstm_hidden_size: %d" % (self.lstm_hidden_size, ),
+            "lstm_layers: %d" % (self.lstm_layers, ),
+            "lstm_dropout: %.2f" % (self.dropout, ),
+            "classifier_hidden_size: %d" % (self.classifier_hidden_size, ),
+            "dropout: %.2f" % (self.dropout, )))
 
         ax[0].plot(train_loss, c='blue', label='train')
         ax[0].plot(test_loss, c='orange', label='validation')
@@ -381,49 +392,87 @@ class Predictor:
         epochs_without_improvement = 0
 
         tqdm_log_file_path = Path(current_results_dir) / "tqdm_progress.log"
-        self.tqdm_log_file = open(tqdm_log_file_path, 'w')
-        for epoch in range(self.epochs):
-            train_loss, train_metrics = self._train_epoch()
-            train_loss_log.append(train_loss)
-            train_metrics_log = self._update_metrics_log(metrics_names, train_metrics_log, train_metrics)
+        plotting_csv_path = Path(current_results_dir) / "plotting.csv"
+        # Open files and ensure they are closed properly
+        try:
+            self.tqdm_log_file = open(tqdm_log_file_path, 'w')
+            with open(plotting_csv_path, 'w', newline='') as plot_log_csv_file: # Open CSV file
+                csv_writer = csv.writer(plot_log_csv_file)
+                # Write header to CSV
+                header = ['epoch', 'train_loss', 'val_loss']
+                for name in metrics_names:
+                    header.append(f'train_{name}')
+                for name in metrics_names:
+                    header.append(f'val_{name}')
+                csv_writer.writerow(header)
 
-            val_loss, val_metrics = self._evaluate_epoch()
-            val_loss_log.append(val_loss)
-            val_metrics_log = self._update_metrics_log(metrics_names, val_metrics_log, val_metrics)
-            accuracy = val_metrics["accuracy"]
-            print(f"Epoch {epoch+1}/{self.epochs}, Train Loss: {train_loss:.4f}, Val Loss: {val_loss:.4f}, Accuracy: {accuracy:.4f}")
+                for epoch in range(self.epochs):
+                    train_loss, train_metrics = self._train_epoch()
+                    train_loss_log.append(train_loss)
+                    train_metrics_log = self._update_metrics_log(metrics_names, train_metrics_log, train_metrics)
 
-            self._plot_training(train_loss_log, val_loss_log, metrics_names, train_metrics_log, val_metrics_log)
+                    val_loss, val_metrics = self._evaluate_epoch()
+                    val_loss_log.append(val_loss)
+                    val_metrics_log = self._update_metrics_log(metrics_names, val_metrics_log, val_metrics)
+                    accuracy = val_metrics["accuracy"] # Assuming "accuracy" is always in val_metrics
+                    
+                    # Prepare data row for CSV
+                    # Ensure metrics_names order matches the one used for header: f1, then accuracy
+                    # train_metrics and val_metrics are dictionaries
+                    row_data = [epoch + 1, f"{train_loss:.4f}", f"{val_loss:.4f}"]
+                    for name in metrics_names: # train_f1, train_accuracy
+                        row_data.append(f"{train_metrics.get(name, 0.0):.4f}")
+                    for name in metrics_names: # val_f1, val_accuracy
+                        row_data.append(f"{val_metrics.get(name, 0.0):.4f}")
+                    csv_writer.writerow(row_data)
+                    plot_log_csv_file.flush() # Ensure data is written to disk immediately
 
-            # --- Early Stopping Logic ---
-            if accuracy > best_val_score:
-                best_val_score = accuracy
-                epochs_without_improvement = 0 # Reset counter
-                # Save the model if the accuracy is improved
-                best_model_path = Path(current_results_dir) / "best_model.pth"
-                torch.save(self.model.state_dict(), best_model_path)
-                print(f"Model saved to {best_model_path} with improved accuracy: {accuracy:.4f}")
+                    print(f"Epoch {epoch+1}/{self.epochs}, Train Loss: {train_loss:.4f}, Val Loss: {val_loss:.4f}, Accuracy: {accuracy:.4f}")
 
-            else:
-                epochs_without_improvement += 1 # Increment counter
-                print(f"Validation accuracy did not improve. Epochs without improvement: {epochs_without_improvement}")
+                    self._plot_training(train_loss_log, val_loss_log, metrics_names, train_metrics_log, val_metrics_log)
 
-            # Check for early stopping
-            if epochs_without_improvement >= self.patience:
-                print(f"Early stopping triggered after {self.patience} epochs without improvement.")
-                break # Exit the training loop
-            # --- End Early Stopping Logic ---
-            
-            save_checkpoint(self.model, self.optimizer, epoch, loss=train_loss, checkpoint_path = Path(current_results_dir) / "checkpoints/checkpoint.pth", store_checkpoint_for_every_epoch=store_checkpoint_for_every_epoch)
-            
-            time_so_far = time.time() - start_time
-            expected_time = time_so_far / (epoch + 1) * (self.epochs - epoch - 1)
-            print(f"Time elapsed: {time_so_far:.2f}s, Expected time remaining: {expected_time:.2f}s")
+                    # --- Early Stopping Logic ---
+                    if accuracy > best_val_score:
+                        best_val_score = accuracy
+                        epochs_without_improvement = 0 # Reset counter
+                        # Save the model if the accuracy is improved
+                        best_model_path = Path(current_results_dir) / "best_model.pth"
+                        torch.save(self.model.state_dict(), best_model_path)
+                        print(f"Model saved to {best_model_path} with improved accuracy: {accuracy:.4f}")
 
-            # flush log file
-            log_file.flush()
+                    else:
+                        epochs_without_improvement += 1 # Increment counter
+                        print(f"Validation accuracy did not improve. Epochs without improvement: {epochs_without_improvement}")
 
-        os.remove(tqdm_log_file_path)  # Remove the log file after training
+                    # Check for early stopping
+                    if epochs_without_improvement >= self.patience:
+                        print(f"Early stopping triggered after {self.patience} epochs without improvement.")
+                        break # Exit the training loop
+                    # --- End Early Stopping Logic ---
+                    
+                    save_checkpoint(self.model, self.optimizer, epoch, loss=train_loss, checkpoint_path = Path(current_results_dir) / "checkpoints/checkpoint.pth", store_checkpoint_for_every_epoch=store_checkpoint_for_every_epoch)
+                                
+                    time_so_far = time.time() - start_time
+                    expected_time = time_so_far / (epoch + 1) * (self.epochs - epoch - 1)
+                    print(f"Time elapsed: {time_so_far:.2f}s, Expected time remaining: {expected_time:.2f}s")
+
+                    # flush log file (assuming log_file is the one opened in __main__)
+                    # This part might need adjustment if log_file is not accessible here
+                    # or if you mean sys.stdout which is redirected to a file.
+                    # If sys.stdout is redirected, it's usually buffered, and flushing can be done via sys.stdout.flush()
+                    if sys.stdout.isatty() is False: # Check if stdout is redirected
+                         sys.stdout.flush()
+
+
+        finally:
+            if self.tqdm_log_file:
+                self.tqdm_log_file.close()
+                if os.path.exists(tqdm_log_file_path):
+                    try:
+                        os.remove(tqdm_log_file_path)  # Remove the log file after training
+                    except OSError as e:
+                        print(f"Error removing tqdm log file: {e}", file=sys.stderr) # Print to original stderr if possible
+            # self.plot_log_file is now plot_log_csv_file and managed by 'with open'
 
     def load_model(self, model_path):
         # Load the model state dict
@@ -522,32 +571,92 @@ if __name__ == "__main__":
             sys.stdout = log_file
             sys.stderr = error_log_file
 
-            # Now, all print statements and errors will go to these files
+            if LOAD_MODEL is not None and not FINETUNE:
+                print("Running the model after training...")
 
-            # Entry point for the script
-            # Instantiate the Predictor class
-            # Pass the list of data files found in the data_dir
-            predictor = Predictor(config_file, data_files)
+                predictor = Predictor(config_file, data_files)
+                predictor.load_model(Path(LOAD_MODEL) / "best_model.pth")
 
-            # Train the model
-            print("Starting model training...")
-            predictor.train_model()
-            print("Training finished.")
+                print(f"Model loaded from {LOAD_MODEL}")
 
-            # Load the best saved model
-            # Construct the path to the best model file within the timestamped results directory
-            best_model_path_for_loading = Path(current_results_dir) / "best_model.pth"
-            print(f"Loading best model from {best_model_path_for_loading}")
-            predictor.load_model(best_model_path_for_loading) # Pass full path
+                # Example prediction on a new text
+                text_to_predict = ["Nowadays, all of the problems in America are caused",
+                                   "You know, women are",
+                                   "I don't like",
+                                   "I don't like the way you talk to me",
+                                   "I think that black",
+                                   "In the 70s, women",
+                                   "I like cats and ",
+                                   "Given the current state of the economy, I think",
+                                   "My favourite "]
+                for phrase in text_to_predict:
+                    print(f"\nMaking prediction for: '{phrase}'")
+                    prob, class_value = predictor.predict(phrase)
+                    print(f"Prediction Result:")
+                    # Accessing the single value from the numpy arrays
+                    print(f"Probability: {prob}, Predicted Class: {int(class_value)}")
+            
+            elif LOAD_MODEL is not None and FINETUNE:
+                print(f"--- Mode: Fine-tuning ---")
+                print(f"Initializing model structure for fine-tuning...")
+                # Instantiate Predictor, which sets up model structure and optimizer
+                predictor = Predictor(config_file, data_files)
+                
+                model_path_to_finetune = Path(LOAD_MODEL) / "best_model.pth"
 
-            # Example prediction on a new text
-            text_to_predict = "This is a sample text for prediction after training."
-            text_to_predict = "You are a fucking "
-            print(f"\nMaking prediction for: '{text_to_predict}'")
-            prob, class_value = predictor.predict(text_to_predict)
-            print(f"Prediction Result:")
-            # Accessing the single value from the numpy arrays
-            print(f"Probability: {prob}, Predicted Class: {int(class_value)}")
+                if os.path.exists(model_path_to_finetune):
+                    print(f"Loading model weights from {model_path_to_finetune} for fine-tuning...")
+                    predictor.load_model(model_path_to_finetune) # Loads weights into self.model
+                else:
+                    raise FileNotFoundError(f"Model to fine-tune not found at {model_path_to_finetune}")
+
+                print("Starting fine-tuning process...")
+                predictor.train_model() # Train the loaded model
+                print("Fine-tuning finished.")
+
+                # After fine-tuning, load the newly saved best model from the current run for prediction
+                best_model_path_after_finetune = Path(current_results_dir) / "best_model.pth"
+                if os.path.exists(best_model_path_after_finetune):
+                    print(f"Loading best model from current fine-tuning run: {best_model_path_after_finetune}")
+                    predictor.load_model(best_model_path_after_finetune) # Load the model saved by this fine-tuning run
+                    # Example prediction (you can expand this)
+                    text_to_predict = "You are a fucking "
+                    print(f"\nMaking prediction for: '{text_to_predict}'")
+                    prob, class_value = predictor.predict(text_to_predict)
+                    print(f"Prediction Result:")
+                    # Accessing the single value from the numpy arrays
+                    print(f"Probability: {prob}, Predicted Class: {int(class_value)}")
+                else:
+                    print(f"No best model found at {best_model_path_after_finetune} after fine-tuning session.")
+
+            else:
+
+                # Now, all print statements and errors will go to these files
+
+                # Entry point for the script
+                # Instantiate the Predictor class
+                # Pass the list of data files found in the data_dir
+                predictor = Predictor(config_file, data_files)
+
+                # Train the model
+                print("Starting model training...")
+                predictor.train_model()
+                print("Training finished.")
+
+                # Load the best saved model
+                # Construct the path to the best model file within the timestamped results directory
+                best_model_path_for_loading = Path(current_results_dir) / "best_model.pth"
+                print(f"Loading best model from {best_model_path_for_loading}")
+                predictor.load_model(best_model_path_for_loading) # Pass full path
+
+                # Example prediction on a new text
+                text_to_predict = "This is a sample text for prediction after training."
+                text_to_predict = "You are a fucking "
+                print(f"\nMaking prediction for: '{text_to_predict}'")
+                prob, class_value = predictor.predict(text_to_predict)
+                print(f"Prediction Result:")
+                # Accessing the single value from the numpy arrays
+                print(f"Probability: {prob}, Predicted Class: {int(class_value)}")
 
     except Exception as e:
         # Print any unhandled exceptions to the error log file
