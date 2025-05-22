@@ -379,7 +379,7 @@ class Predictor:
         fig, ax = plt.subplots(1, len(metrics_names) + 2, figsize=((len(metrics_names) + 2) * 5, 5))
         
         # join loss computation with date and time
-        title = "GPT2: " + str(self.loss_computation) + " -- " + DATETIME
+        title = "GPT2 RNN: " + str(self.loss_computation) + " -- " + DATETIME
         fig.suptitle(title, fontsize=16)
 
         textstr = "\n".join((
@@ -536,10 +536,12 @@ class Predictor:
         return prob.cpu().numpy(), class_value.cpu().numpy()
 
     class PredictionModel(nn.Module):
-        def __init__(self, text_encoder, classifier_hidden_size, dropout, output_dim):
+        def __init__(self, text_encoder, classifier_hidden_size, lstm_hidden_size, lstm_layers, dropout, output_dim):
             super().__init__()
             self.text_encoder = text_encoder
             self.lstm_hidden_size = lstm_hidden_size
+            self.lstm_layers = lstm_layers
+            self.dropout = dropout
 
             self.lstm = nn.LSTM(
                 input_size=GPT2Config.from_pretrained("gpt2").hidden_size, # input size is the dimension of BERT's token embeddings
@@ -554,12 +556,12 @@ class Predictor:
             lstm_output_size = lstm_hidden_size * 2
 
             self.classifier = nn.Sequential(
-                nn.Linear(lstm_output_size classifier_hidden_size),
-                #nn.LayerNorm(classifier_hidden_size),
+                nn.Linear(lstm_output_size, classifier_hidden_size),
+                nn.LayerNorm(classifier_hidden_size),
                 nn.GELU(),
                 nn.Dropout(dropout),
                 nn.Linear(classifier_hidden_size, classifier_hidden_size // 2),
-                #nn.LayerNorm(classifier_hidden_size // 2),
+                nn.LayerNorm(classifier_hidden_size // 2),
                 nn.GELU(),
                 nn.Dropout(dropout),
                 nn.Linear(classifier_hidden_size // 2, output_dim)
@@ -583,32 +585,25 @@ class Predictor:
             # Get the BERT embeddings
             out = self.text_encoder(input_ids=input_ids, attention_mask=attention_mask)
 
-            # BERT's pooled output (derived from CLS token, processed for classification tasks)
-            bert_cls_pooled_output = out.pooler_output # Shape: (batch_size, bert_hidden_size)
-
             # get sequence output from BERT for use in LSTM
             sequence_output = out.last_hidden_state
 
             # Pass the full sequence output through the LSTM
             lstm_out, _ = self.lstm(sequence_output) # lstm_out shape: (batch_size, seq_len, lstm_hidden_size * 2)
             
-            # Get LSTM's output corresponding to the first token position (CLS token's position)
-            lstm_first_token_output = lstm_out[:, 0, :] # Shape: (batch_size, lstm_hidden_size * 2)
+            # pick the LSTM output corresponding to the "current end of prefix"
+            # since GPT-2 is causal, the last non-padded position best represents the prefix
+            seq_lengths = attention_mask.sum(dim=1)               # (batch_size,)
+            last_idxs = (seq_lengths - 1).clamp(min=0).long()   # avoid negative
+            batch_idxs = torch.arange(attention_mask.size(0), device=attention_mask.device)
+            prefix_repr = lstm_out[batch_idxs, last_idxs, :]      # (batch_size, lstm_hidden_size * 2)
 
-            # Concatenate BERT's direct CLS pooled output with LSTM's output for the first token
-            combined_features = torch.cat((bert_cls_pooled_output, lstm_first_token_output), dim=1)
+            # classification head
+            logits = self.classifier(prefix_repr)           # (batch_size, 1)
+            probs = torch.sigmoid(logits)
+            classes = torch.round(probs)
 
-            # Pass the combined features through the classifier
-            # output = self.classifier(combined_features) # Shape: (batch_size, output_dim)
-
-            # # pass the LSTM output through the classifier
-            # # compute the logits
-            output = self.classifier(lstm_first_token_output) # Shape: (batch_size, output_dim)
-
-            # compute probabilities and class values
-            prob = torch.sigmoid(output)
-            class_value = torch.round(prob)
-            return output, prob, class_value
+            return logits, probs, classes
         
     class TextDataset(Dataset):
         def __init__(self, text_data, labels, text_transform=None, max_len=512):
@@ -616,7 +611,6 @@ class Predictor:
             self.labels = labels
             self.text_transform = text_transform
             self.max_len = max_len
-
         def __len__(self):
             return len(self.labels)
 

@@ -567,15 +567,29 @@ class Predictor:
 
         def __getitem__(self, idx):
             # Tokenize and preprocess text
-            text = self.text_data[idx]
+            text_item = self.text_data[idx] # Renamed to avoid confusion with the 'text' variable later
 
-            length = len(text.split())
-            divider = np.random.randint(1, length+1)
-            text = " ".join(text.split()[:divider]) # take the prefix
-            weight = (np.exp(3*divider / length) - 1) / (np.exp(3) - 1)
+            words = text_item.split()
+            length = len(words)
             
+            current_text_for_tokenizer = "" # Default to empty string
+            weight = 0.0 # Default weight
+
+            if length > 0:
+                # Ensure divider is at least 1 and at most length
+                divider = np.random.randint(1, length + 1)
+                current_text_for_tokenizer = "".join(words[:divider]) # take the prefix
+                # Calculate weight, ensure no division by zero if length was 0 (though handled by if)
+                weight = (np.exp(3 * divider / length) - 1) / (np.exp(3) - 1) if length > 0 else 0.0
+            # else:
+                # If length is 0, current_text_for_tokenizer remains "" and weight remains 0.0
+                # This means an empty string will be tokenized.
+                # print(f"Warning: Empty text encountered at index {idx}: '{text_item}'", file=sys.stderr) # Optional: for debugging
+
+            input_ids, attention_mask = torch.empty(0, dtype=torch.long), torch.empty(0, dtype=torch.long) # Defaults for safety
             if self.text_transform:
-                input_ids, attention_mask = self.text_transform(text)
+                # self._tokenize_text should handle empty strings gracefully (e.g., return CLS, SEP tokens)
+                input_ids, attention_mask = self.text_transform(current_text_for_tokenizer)
 
             label = self.labels[idx]
             return input_ids, attention_mask, label, weight

@@ -530,11 +530,11 @@ class Predictor:
 
             self.classifier = nn.Sequential(
                 nn.Linear(GPT2Config.from_pretrained("gpt2").hidden_size, classifier_hidden_size),
-                #nn.LayerNorm(classifier_hidden_size),
+                nn.LayerNorm(classifier_hidden_size),
                 nn.GELU(),
                 nn.Dropout(dropout),
                 nn.Linear(classifier_hidden_size, classifier_hidden_size // 2),
-                #nn.LayerNorm(classifier_hidden_size // 2),
+                nn.LayerNorm(classifier_hidden_size // 2),
                 nn.GELU(),
                 nn.Dropout(dropout),
                 nn.Linear(classifier_hidden_size // 2, output_dim)
@@ -556,11 +556,21 @@ class Predictor:
 
         def forward(self, input_ids, attention_mask):
             out = self.text_encoder(input_ids=input_ids, attention_mask=attention_mask)
-            text_features = out.last_hidden_state[:, 0, :]
+            
+            # Compute the actual lengths of each input (number of unmasked tokens)
+            lengths = attention_mask.sum(dim=1)  # shape: (batch_size,)
+            last_indices = lengths - 1           # index of the last real token (not padding)
+            
+            batch_size = input_ids.size(0)
+            batch_indices = torch.arange(batch_size, device=input_ids.device)
+
+            # Select the final hidden state of the last non-padded token for each sequence
+            text_features = out.last_hidden_state[batch_indices, last_indices, :]  # shape: (batch_size, hidden_dim)
+
             output = self.classifier(text_features)
-            # print(f"Output: {output}")
             prob = torch.sigmoid(output)
             class_value = torch.round(prob)
+
             return output, prob, class_value
         
     class TextDataset(Dataset):

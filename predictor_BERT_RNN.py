@@ -390,7 +390,7 @@ class Predictor:
             "max grad norm: %.2f" % (self.max_grad_norm, ),
             "lstm_hidden_size: %d" % (self.lstm_hidden_size, ),
             "lstm_layers: %d" % (self.lstm_layers, ),
-            "lstm_dropout: %.2f" % (self.dropout, ),
+            "lstm_dropout: %.2f" % (self.dropout/2, ),
             "classifier_hidden_size: %d" % (self.classifier_hidden_size, ),
             "dropout: %.2f" % (self.dropout, )))
 
@@ -547,7 +547,7 @@ class Predictor:
                 batch_first=True, # input tensors are (batch_size, seq_len, input_size)
                 bidirectional=True, # use a bidirectional LSTM
                 num_layers=lstm_layers, # number of LSTM layers
-                dropout=dropout, # dropout between LSTM layers
+                dropout=dropout/2, # dropout between LSTM layers
             )
         
             # the output size of a bidirectional LSTM is 2 * hidden_size
