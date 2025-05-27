@@ -58,6 +58,9 @@ def main():
             print("  No rows remaining after initial NaN drop.")
             print("  ---")
             continue
+    
+        # Dropping lines with label == 0.0
+        #df_cleaned = df_cleaned[df_cleaned['label'] != 0.0]
 
         # --- Text validation ---
         df_cleaned['text'] = df_cleaned['text'].astype(str)
@@ -128,11 +131,12 @@ def main():
     print(f"Total rows with empty 'text' (after initial NaN drop): {overall_empty_text}")
     print(f"Total fully valid rows (meeting all criteria): {overall_fully_valid_rows}")
     print(f"  Label counts: {label_counts}")
-    plt.bar(label_counts.keys(), label_counts.values(), width=0.1)
-    plt.xlabel('Label')
-    plt.ylabel('Count')
-    plt.title('Label Distribution')
-    plt.xticks(rotation=45)
+    plt.bar(label_counts.keys(), label_counts.values(), width=0.09)
+    plt.xlabel('Label', fontsize=20)
+    plt.ylabel('Count', fontsize=20)
+    plt.title('Label Distribution', fontsize=20)
+    plt.xticks(fontsize=15)
+    plt.yticks(fontsize=15)
     plt.tight_layout()
     plt.savefig(dataset_dir / "label_distribution.png")
     plt.show()
