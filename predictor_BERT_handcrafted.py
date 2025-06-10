@@ -169,7 +169,6 @@ class Predictor:
         self.weight_decay = config["training"].get("weight_decay", 0.0)
 
         # loss computation
-        self.loss_computation = config.get("loss_computation", "logits")
         self.loss_computation = "handcrafted"
 
         # debug
@@ -293,12 +292,8 @@ class Predictor:
             # forward pass
             self.optimizer.zero_grad()
             logits, prob, classes = self.model(input_ids, attention_mask)
-            if self.loss_computation == "classes":
-                loss_per_element = self.criterion(classes, labels) # using classes computed from probabilities (BCELoss)
-            elif self.loss_computation == "probabilities" or self.loss_computation == "handcrafted":
-                loss_per_element = self.criterion(self._bin_outputs(prob), labels)
-            else:
-                loss_per_element = self.criterion(logits, labels) # using logits directly (BCEWithLogitsLoss)
+            
+            loss_per_element = self.criterion(self._bin_outputs(prob), labels)
 
             # scale the loss by the weights
             alpha = 4*labels**2
@@ -343,12 +338,7 @@ class Predictor:
 
                 logits, prob, classes = self.model(input_ids, attention_mask)
 
-                if self.loss_computation == "classes":
-                    loss_per_element = self.criterion(classes, labels) # using classes computed from probabilities (BCELoss)
-                elif self.loss_computation == "probabilities" or self.loss_computation == "handcrafted":
-                    loss_per_element = self.criterion(self._bin_outputs(prob), labels)
-                else:
-                    loss_per_element = self.criterion(logits, labels) # using logits directly (BCEWithLogitsLoss)
+                loss_per_element = self.criterion(self._bin_outputs(prob), labels)
                 
 
                 alpha = 4*labels**2

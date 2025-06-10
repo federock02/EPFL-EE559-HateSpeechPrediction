@@ -22,7 +22,7 @@ import matplotlib.pyplot as plt
 import time
 import csv
 
-from checkpoint_utils import save_checkpoint, load_checkpoint
+from utils.checkpoint_utils import save_checkpoint, load_checkpoint
 
 def parse_args():
     # when working with python files from console it's better to specify
@@ -33,9 +33,7 @@ def parse_args():
     parser.add_argument("--no_freeze", action="store_true", help="Do not freeze the text encoder")
     parser.add_argument("--load_model_dir", default=None, help="Directory to load the model from")
     parser.add_argument("--finetune", action="store_true", help="Enable finetuning from loaded model")
-
     args = parser.parse_args()
-
     return args.dataset_path, args.results_path, args.debug, args.no_freeze, args.load_model_dir, args.finetune
 
 DATADIR, RESULTS_DIR, DEBUG, NO_FREEZE, LOAD_MODEL, FINETUNE = parse_args()
@@ -47,11 +45,9 @@ os.makedirs(current_results_dir / 'checkpoints', exist_ok=True)
 if not os.path.exists(Path(DATADIR)):
     raise Exception(f'Dataset not found. Please upload a dataset first. '
                     f'It should be stored in the {Path(DATADIR)} directory')
-
 data_dir_path = Path(DATADIR)
 if not os.path.exists(data_dir_path):
     raise Exception(f'Dataset directory not found at {data_dir_path}. Please ensure the directory exists and contains your data files.')
-
 config_file = data_dir_path / 'cfg.yaml'
 if not os.path.exists(config_file):
     raise Exception(f'Config file not found at {config_file}. Please ensure cfg.yaml is in the data directory.')
@@ -96,10 +92,10 @@ class Predictor:
         # device
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-        # Wrap with DataParallel
+        # wrap with DataParallel
         self.model = nn.DataParallel(model)
 
-        # Send to device
+        # send to device
         self.model = self.model.to(self.device)
 
         # dataset
@@ -116,7 +112,7 @@ class Predictor:
             for name, param in self.model.named_parameters():
                 if not param.requires_grad:
                     continue
-                # Check for parameters that should not have weight decay
+                # check for parameters that should not have weight decay
                 if name.endswith(".bias") or "layernorm" in name.lower() or "batchnorm" in name.lower():
                     no_decay_parameters.append(param)
                 else:
@@ -173,7 +169,7 @@ class Predictor:
         self.samples_debug = config.get("samples_debug", 500) # number of samples to use for debugging
     
     def _tokenize_text(self, text):
-        # Tokenize the text
+        # tokenize the text
         tokens = self.tokenizer(
             text,
             max_length=self.max_len,
@@ -184,10 +180,10 @@ class Predictor:
         return tokens['input_ids'], tokens['attention_mask']
     
     def _collate_fn(self, batch):
-        # Collate function to create batches
+        # collate function to create batches
         input_ids = torch.cat([item[0] for item in batch], dim=0)
         attention_mask = torch.cat([item[1] for item in batch], dim=0)
-        # Ensure labels are converted to float and have the correct shape for BCELoss
+        # ensure labels are converted to float and have the correct shape for BCELoss
         labels = torch.tensor([item[2] for item in batch], dtype=torch.float32).unsqueeze(1)
         weights = torch.tensor([item[3] for item in batch], dtype=torch.float32).unsqueeze(1)
         return input_ids, attention_mask, labels, weights
@@ -196,14 +192,14 @@ class Predictor:
         all_text_data = []
         all_labels = []
 
-        # Load and concatenate data from all specified CSV or TSV files
+        # load and concatenate data from all specified CSV or TSV files
         for data_file in data_files:
             print(f"Loading data from {data_file}...")
             
-            # Determine the file extension
+            # determine the file extension
             _, ext = os.path.splitext(data_file)
             
-            # Choose the correct separator
+            # choose the correct separator
             if ext == ".tsv":
                 sep = "\t"
             elif ext == ".csv":
@@ -211,15 +207,15 @@ class Predictor:
             else:
                 raise ValueError(f"Unsupported file format: {ext}")
 
-            # Read file with appropriate separator
+            # read file with appropriate separator
             df = pd.read_csv(data_file, sep=sep)
 
-            # Drop rows with missing text or label and reset index
+            # drop rows with missing text or label and reset index
             df = df.dropna(subset=["text", "label"]).reset_index(drop=True)
             text_data = df["text"]
             labels = df["label"].astype("float32")
 
-            # Check if labels are within the [0, 1] range (assuming binary 0 or 1 labels)
+            # check if labels are within the [0, 1] range (assuming binary 0 or 1 labels)
             if not ((labels >= 0) & (labels <= 1)).all():
                  print(f"Warning: Labels in {data_file} contain values outside [0, 1]. Keeping only 0 and 1.")
                  labels = labels[labels.isin([0, 1])]
@@ -233,27 +229,26 @@ class Predictor:
             all_text_data.extend(text_data.tolist())
             all_labels.extend(labels.tolist())
         
-        # Preprocess the text data
-        all_text_data = [text.replace("\n", " ") for text in all_text_data]  # Replace newlines with spaces
-        all_text_data = [text.replace("\r", " ") for text in all_text_data]  # Replace carriage returns with spaces
-        all_text_data = [text.replace("\t", " ") for text in all_text_data]  # Replace tabs with spaces
-        all_text_data = [text.replace("  ", " ") for text in all_text_data]  # Replace double spaces with single space
-        all_text_data = [text.strip() for text in all_text_data]  # Strip leading/trailing spaces
-        # Remove @mentions and URLs
-        all_text_data = [text.replace("@", "") for text in all_text_data]  # Remove @mentions
-        all_text_data = [text.replace("http", "") for text in all_text_data]  # Remove URLs
-        all_text_data = [text.replace("https", "") for text in all_text_data]  # Remove URLs
-        all_text_data = [text.replace("www", "") for text in all_text_data]  # Remove URLs
+        # preprocess the text data
+        all_text_data = [text.replace("\n", " ") for text in all_text_data]
+        all_text_data = [text.replace("\r", " ") for text in all_text_data]
+        all_text_data = [text.replace("\t", " ") for text in all_text_data]
+        all_text_data = [text.replace("  ", " ") for text in all_text_data]
+        all_text_data = [text.strip() for text in all_text_data]
+        all_text_data = [text.replace("@", "") for text in all_text_data]
+        all_text_data = [text.replace("http", "") for text in all_text_data]
+        all_text_data = [text.replace("https", "") for text in all_text_data]
+        all_text_data = [text.replace("www", "") for text in all_text_data]
         
         if self.debug:
             print(f"Debug mode is ON. Limiting dataset size to {self.samples_debug} samples.")
-            # Limit the dataset size for debugging
+            # limit the dataset size for debugging
             all_text_data = all_text_data[:self.samples_debug]
             all_labels = all_labels[:self.samples_debug]
 
         print(f"Total dataset size after combining: {len(all_text_data)}")
 
-        # Perform train/validation split on the combined data
+        # perform train/validation split on the combined data
         # stratify=labels ensures that the proportion of labels is the same in train and val sets
         train_texts, val_texts, train_labels, val_labels = train_test_split(
             all_text_data, all_labels, test_size=self.val_split_ratio, random_state=42, stratify=all_labels
@@ -262,7 +257,7 @@ class Predictor:
         print(f"Train set size: {len(train_texts)}")
         print(f"Validation set size: {len(val_texts)}")
 
-        # Instantiate dataset and dataloaders
+        # instantiate dataset and dataloaders
         train_dataset = self.TextDataset(train_texts, train_labels, text_transform=self._tokenize_text, max_len=self.max_len)
         train_loader = DataLoader(train_dataset, batch_size=self.batch_size, shuffle=True, collate_fn=self._collate_fn)
         
@@ -278,7 +273,7 @@ class Predictor:
         for input_ids, attention_mask, labels, weights in tqdm(self.train_loader, desc="Training", file=self.tqdm_log_file):
             input_ids, attention_mask, labels, weights = input_ids.to(self.device), attention_mask.to(self.device), labels.to(self.device), weights.to(self.device)
 
-            # Forward pass
+            # forward pass
             self.optimizer.zero_grad()
             logits, prob, classes = self.model(input_ids, attention_mask)
             if self.loss_computation == "classes":
@@ -291,7 +286,7 @@ class Predictor:
 
             loss = (loss_per_element * weights).mean()
 
-            # Backward pass and optimization
+            # backward pass and optimization
             loss.backward()
             torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.max_grad_norm)
             self.optimizer.step()
@@ -336,7 +331,7 @@ class Predictor:
                 # scale the loss by the weights
                 loss = (loss_per_element * weights).mean()
 
-                # Accumulate loss
+                # accumulate loss
                 epoch_loss += loss.item()
 
                 for k in epoch_metrics.keys():
@@ -409,18 +404,18 @@ class Predictor:
 
         start_time = time.time()
 
-        # Early Stopping variables
-        best_val_score = -float('inf') # Initialize best validation score
+        # early Stopping variables
+        best_val_score = -float('inf') # initialize best validation score
         epochs_without_improvement = 0
 
         tqdm_log_file_path = Path(current_results_dir) / "tqdm_progress.log"
         plotting_csv_path = Path(current_results_dir) / "plotting.csv"
-        # Open files and ensure they are closed properly
+        # open files and ensure they are closed properly
         try:
             self.tqdm_log_file = open(tqdm_log_file_path, 'w')
-            with open(plotting_csv_path, 'w', newline='') as plot_log_csv_file: # Open CSV file
+            with open(plotting_csv_path, 'w', newline='') as plot_log_csv_file: # open CSV file
                 csv_writer = csv.writer(plot_log_csv_file)
-                # Write header to CSV
+                # write header to CSV
                 header = ['epoch', 'train_loss', 'val_loss']
                 for name in metrics_names:
                     header.append(f'train_{name}')
@@ -436,10 +431,10 @@ class Predictor:
                     val_loss, val_metrics = self._evaluate_epoch()
                     val_loss_log.append(val_loss)
                     val_metrics_log = self._update_metrics_log(metrics_names, val_metrics_log, val_metrics)
-                    accuracy = val_metrics["accuracy"] # Assuming "accuracy" is always in val_metrics
+                    accuracy = val_metrics["accuracy"] # assuming "accuracy" is always in val_metrics
                     
-                    # Prepare data row for CSV
-                    # Ensure metrics_names order matches the one used for header: f1, then accuracy
+                    # prepare data row for CSV
+                    # ensure metrics_names order matches the one used for header: f1, then accuracy
                     # train_metrics and val_metrics are dictionaries
                     row_data = [epoch + 1, f"{train_loss:.4f}", f"{val_loss:.4f}"]
                     for name in metrics_names: # train_f1, train_accuracy
@@ -447,30 +442,29 @@ class Predictor:
                     for name in metrics_names: # val_f1, val_accuracy
                         row_data.append(f"{val_metrics.get(name, 0.0):.4f}")
                     csv_writer.writerow(row_data)
-                    plot_log_csv_file.flush() # Ensure data is written to disk immediately
+                    plot_log_csv_file.flush() # ensure data is written to disk immediately
 
                     print(f"Epoch {epoch+1}/{self.epochs}, Train Loss: {train_loss:.4f}, Val Loss: {val_loss:.4f}, Accuracy: {accuracy:.4f}")
 
                     self._plot_training(train_loss_log, val_loss_log, metrics_names, train_metrics_log, val_metrics_log)
 
-                    # --- Early Stopping Logic ---
+                    # early stopping logic
                     if accuracy > best_val_score:
                         best_val_score = accuracy
-                        epochs_without_improvement = 0 # Reset counter
-                        # Save the model if the accuracy is improved
+                        epochs_without_improvement = 0 # reset counter
+                        # save the model if the accuracy is improved
                         best_model_path = Path(current_results_dir) / "best_model.pth"
                         torch.save(self.model.state_dict(), best_model_path)
                         print(f"Model saved to {best_model_path} with improved accuracy: {accuracy:.4f}")
 
                     else:
-                        epochs_without_improvement += 1 # Increment counter
+                        epochs_without_improvement += 1 # increment counter
                         print(f"Validation accuracy did not improve. Epochs without improvement: {epochs_without_improvement}")
 
-                    # Check for early stopping
+                    # check for early stopping
                     if epochs_without_improvement >= self.patience:
                         print(f"Early stopping triggered after {self.patience} epochs without improvement.")
-                        break # Exit the training loop
-                    # --- End Early Stopping Logic ---
+                        break # exit the training loop
                     
                     save_checkpoint(self.model, self.optimizer, epoch, loss=train_loss, checkpoint_path = Path(current_results_dir) / "checkpoints/checkpoint.pth", store_checkpoint_for_every_epoch=store_checkpoint_for_every_epoch)
                                 
@@ -478,38 +472,34 @@ class Predictor:
                     expected_time = time_so_far / (epoch + 1) * (self.epochs - epoch - 1)
                     print(f"Time elapsed: {time_so_far:.2f}s, Expected time remaining: {expected_time:.2f}s")
 
-                    # flush log file (assuming log_file is the one opened in __main__)
-                    # This part might need adjustment if log_file is not accessible here
-                    # or if you mean sys.stdout which is redirected to a file.
-                    # If sys.stdout is redirected, it's usually buffered, and flushing can be done via sys.stdout.flush()
-                    if sys.stdout.isatty() is False: # Check if stdout is redirected
+                    # flush log file
+                    if sys.stdout.isatty() is False: # check if stdout is redirected
                          sys.stdout.flush()
-
 
         finally:
             if self.tqdm_log_file:
                 self.tqdm_log_file.close()
                 if os.path.exists(tqdm_log_file_path):
                     try:
-                        os.remove(tqdm_log_file_path)  # Remove the log file after training
+                        os.remove(tqdm_log_file_path)  # remove the log file after training
                     except OSError as e:
-                        print(f"Error removing tqdm log file: {e}", file=sys.stderr) # Print to original stderr if possible
+                        print(f"Error removing tqdm log file: {e}", file=sys.stderr) # print to original stderr if possible
             # self.plot_log_file is now plot_log_csv_file and managed by 'with open'
 
     def load_model(self, model_path):
-        # Load the model state dict
+        # load the model state dict
         self.model.load_state_dict(torch.load(model_path))
         self.model.eval()
         print("Model loaded!")
 
     def predict(self, text):
-        # Tokenize the text
+        # tokenize the text
         input_ids, attention_mask = self._tokenize_text(text)
 
-        # Move to device
+        # move to device
         input_ids, attention_mask = input_ids.to(self.device), attention_mask.to(self.device)
 
-        # Forward pass
+        # forward pass
         with torch.no_grad():
             _, prob, class_value = self.model(input_ids, attention_mask)
         
@@ -566,27 +556,23 @@ class Predictor:
             return len(self.labels)
 
         def __getitem__(self, idx):
-            # Tokenize and preprocess text
-            text_item = self.text_data[idx] # Renamed to avoid confusion with the 'text' variable later
+            # tokenize and preprocess text
+            text_item = self.text_data[idx] # renamed to avoid confusion with the 'text' variable later
 
             words = text_item.split()
             length = len(words)
             
-            current_text_for_tokenizer = "" # Default to empty string
-            weight = 0.0 # Default weight
+            current_text_for_tokenizer = "" # default to empty string
+            weight = 0.0 # default weight
 
             if length > 0:
-                # Ensure divider is at least 1 and at most length
+                # ensure divider is at least 1 and at most length
                 divider = np.random.randint(1, length + 1)
                 current_text_for_tokenizer = "".join(words[:divider]) # take the prefix
-                # Calculate weight, ensure no division by zero if length was 0 (though handled by if)
+                # calculate weight, ensure no division by zero if length was 0 (though handled by if)
                 weight = (np.exp(3 * divider / length) - 1) / (np.exp(3) - 1) if length > 0 else 0.0
-            # else:
-                # If length is 0, current_text_for_tokenizer remains "" and weight remains 0.0
-                # This means an empty string will be tokenized.
-                # print(f"Warning: Empty text encountered at index {idx}: '{text_item}'", file=sys.stderr) # Optional: for debugging
 
-            input_ids, attention_mask = torch.empty(0, dtype=torch.long), torch.empty(0, dtype=torch.long) # Defaults for safety
+            input_ids, attention_mask = torch.empty(0, dtype=torch.long), torch.empty(0, dtype=torch.long) # defaults for safety
             if self.text_transform:
                 # self._tokenize_text should handle empty strings gracefully (e.g., return CLS, SEP tokens)
                 input_ids, attention_mask = self.text_transform(current_text_for_tokenizer)
@@ -595,21 +581,22 @@ class Predictor:
             return input_ids, attention_mask, label, weight
 
 if __name__ == "__main__":
-    # Store original stdout and stderr
+    # store original stdout and stderr
     original_stdout = sys.stdout
     original_stderr = sys.stderr
 
-    # Define log file paths within the timestamped results directory
+    # define log file paths within the timestamped results directory
     log_file_path = Path(current_results_dir) / "training.log"
     error_log_file_path = Path(current_results_dir) / "error.log"
 
     try:
-        # Open log files in write mode
+        # open log files in write mode
         with open(log_file_path, 'w') as log_file, open(error_log_file_path, 'w') as error_log_file:
-            # Redirect stdout and stderr to the log files
+            # redirect stdout and stderr to the log files
             sys.stdout = log_file
             sys.stderr = error_log_file
 
+            # QUICK INFERENCE MODE
             if LOAD_MODEL is not None and not FINETUNE:
                 print("Running the model after training...")
 
@@ -618,7 +605,7 @@ if __name__ == "__main__":
 
                 print(f"Model loaded from {LOAD_MODEL}")
 
-                # Example prediction on a new text
+                # example prediction on a new text
                 text_to_predict = ["Nowadays, all of the problems in America are caused",
                                    "You know, women are",
                                    "I don't like",
@@ -632,78 +619,73 @@ if __name__ == "__main__":
                     print(f"\nMaking prediction for: '{phrase}'")
                     prob, class_value = predictor.predict(phrase)
                     print(f"Prediction Result:")
-                    # Accessing the single value from the numpy arrays
+                    # accessing the single value from the numpy arrays
                     print(f"Probability: {prob}, Predicted Class: {int(class_value)}")
             
+            # FINETUNE MODE
             elif LOAD_MODEL is not None and FINETUNE:
                 print(f"--- Mode: Fine-tuning ---")
                 print(f"Initializing model structure for fine-tuning...")
-                # Instantiate Predictor, which sets up model structure and optimizer
+                # instantiate Predictor, which sets up model structure and optimizer
                 predictor = Predictor(config_file, data_files)
                 
                 model_path_to_finetune = Path(LOAD_MODEL) / "best_model.pth"
 
                 if os.path.exists(model_path_to_finetune):
                     print(f"Loading model weights from {model_path_to_finetune} for fine-tuning...")
-                    predictor.load_model(model_path_to_finetune) # Loads weights into self.model
+                    predictor.load_model(model_path_to_finetune) # loads weights into self.model
                 else:
                     raise FileNotFoundError(f"Model to fine-tune not found at {model_path_to_finetune}")
 
                 print("Starting fine-tuning process...")
-                predictor.train_model() # Train the loaded model
+                predictor.train_model() # train the loaded model
                 print("Fine-tuning finished.")
 
-                # After fine-tuning, load the newly saved best model from the current run for prediction
+                # after fine-tuning, load the newly saved best model from the current run for prediction
                 best_model_path_after_finetune = Path(current_results_dir) / "best_model.pth"
                 if os.path.exists(best_model_path_after_finetune):
                     print(f"Loading best model from current fine-tuning run: {best_model_path_after_finetune}")
-                    predictor.load_model(best_model_path_after_finetune) # Load the model saved by this fine-tuning run
-                    # Example prediction (you can expand this)
+                    predictor.load_model(best_model_path_after_finetune) # load the model saved by this fine-tuning run
                     text_to_predict = "You are a fucking "
                     print(f"\nMaking prediction for: '{text_to_predict}'")
                     prob, class_value = predictor.predict(text_to_predict)
                     print(f"Prediction Result:")
-                    # Accessing the single value from the numpy arrays
+                    # accessing the single value from the numpy arrays
                     print(f"Probability: {prob}, Predicted Class: {int(class_value)}")
                 else:
                     print(f"No best model found at {best_model_path_after_finetune} after fine-tuning session.")
 
+            # NORMAL TRAINING MODE
             else:
-
-                # Now, all print statements and errors will go to these files
-
-                # Entry point for the script
-                # Instantiate the Predictor class
-                # Pass the list of data files found in the data_dir
                 predictor = Predictor(config_file, data_files)
 
-                # Train the model
+                # train the model
                 print("Starting model training...")
                 predictor.train_model()
                 print("Training finished.")
 
-                # Load the best saved model
-                # Construct the path to the best model file within the timestamped results directory
+                # load the best saved model
+                # construct the path to the best model file within the timestamped results directory
                 best_model_path_for_loading = Path(current_results_dir) / "best_model.pth"
                 print(f"Loading best model from {best_model_path_for_loading}")
-                predictor.load_model(best_model_path_for_loading) # Pass full path
+                predictor.load_model(best_model_path_for_loading) # pass full path
 
-                # Example prediction on a new text
+                # example prediction on a new text
                 text_to_predict = "This is a sample text for prediction after training."
                 text_to_predict = "You are a fucking "
                 print(f"\nMaking prediction for: '{text_to_predict}'")
                 prob, class_value = predictor.predict(text_to_predict)
                 print(f"Prediction Result:")
-                # Accessing the single value from the numpy arrays
+                # accessing the single value from the numpy arrays
                 print(f"Probability: {prob}, Predicted Class: {int(class_value)}")
 
     except Exception as e:
-        # Print any unhandled exceptions to the error log file
+        # print any unhandled exceptions to the error log file
         print(f"An error occurred: {e}", file=sys.stderr)
-        # Re-raise the exception so it's not silently ignored
+        # re-raise the exception so it's not silently ignored
         raise
     finally:
-        # Restore original stdout and stderr
+        # restore original stdout and stderr
         sys.stdout = original_stdout
         sys.stderr = original_stderr
-        print(f"Training process finished. Check logs in {current_results_dir}") # This will print to the console
+        print(f"Training process finished. Check logs in {current_results_dir}") # this will print to the console
