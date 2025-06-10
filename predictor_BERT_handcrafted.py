@@ -227,7 +227,7 @@ class Predictor:
 
             # check if labels are within the [0, 1] range (assuming binary 0 or 1 labels)
             if not ((labels >= 0) & (labels <= 1)).all():
-                 print(f"Warning: Labels in {data_file} contain values outside [0, 1]. Keeping only 0 and 1.")
+                 print(f"Warning: Labels in {data_file} contain values outside [0, 1]. Keeping only between 0 and 1.")
                  valid_labels = (labels >= 0) & (labels <= 1)
                  labels = labels[valid_labels]
                  text_data = text_data[labels.index]
