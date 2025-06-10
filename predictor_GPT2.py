@@ -569,10 +569,9 @@ class Predictor:
             return output, prob, class_value
         
     class TextDataset(Dataset):
-        def __init__(self, text_data, labels, weight, text_transform=None, max_len=512):
+        def __init__(self, text_data, labels, text_transform=None, max_len=512):
             self.text_data = text_data
             self.labels = labels
-            self.weight = weight
             self.text_transform = text_transform
             self.max_len = max_len
 
