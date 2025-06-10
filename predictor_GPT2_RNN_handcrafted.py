@@ -89,11 +89,11 @@ class Predictor:
         model = self.PredictionModel(
             text_encoder=self.text_encoder,
             classifier_hidden_size=self.classifier_hidden_size,
+            lstm_hidden_size=self.lstm_hidden_size,
+            lstm_layers=self.lstm_layers,
             dropout=self.dropout,
             output_dim=1
         )
-
-        print(model)
 
         # device
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -153,6 +153,10 @@ class Predictor:
         # text
         self.max_len = config["text"].get("max_len", 512)
 
+        # lSTM
+        self.lstm_hidden_size = config["lstm"].get("lstm_hidden_size", 512)
+        self.lstm_layers = config["lstm"].get("lstm_layers", 5)
+
         # classifier
         self.classifier_hidden_size = config["classifier"].get("classifier_hidden_size", 512)
         self.dropout = config["classifier"].get("dropout", 0.25)
@@ -161,7 +165,7 @@ class Predictor:
         self.batch_size = config["training"]["batch_size"]
         self.lr = config["training"]["lr"]
         if FINETUNE:
-            self.lr = self.lr / 10
+            self.lr = self.lr / 10 # reduce learning rate for fine-tuning
         self.epochs = config["training"]["epochs"]
         self.val_split_ratio = config["training"].get("val_split_ratio", 0.2)
         self.max_grad_norm = config["training"].get("max_grad_norm", 5.0)
@@ -251,7 +255,10 @@ class Predictor:
         all_text_data = [text.replace("http", "") for text in all_text_data]
         all_text_data = [text.replace("https", "") for text in all_text_data]
         all_text_data = [text.replace("www", "") for text in all_text_data]
-        
+        all_text_data = [text.replace(":", "") for text in all_text_data]
+        all_text_data = [text.replace(";", "") for text in all_text_data]
+        all_text_data = [text.replace("\"", "") for text in all_text_data]
+
         # remove empty strings and relative labels
         all_labels = [label for text, label, weight in zip(all_text_data, all_labels, all_weights) if text.strip() != ""]
         all_weights = [weight for text, label, weight in zip(all_text_data, all_labels, all_weights) if text.strip() != ""]
@@ -304,6 +311,7 @@ class Predictor:
             # downweight for short length of prefix
             mixing_weight = beta * alpha + (1 - beta) * weights
 
+            # loss = (loss_per_element * weights).mean()
             loss = (loss_per_element * mixing_weight).mean()
 
             # backward pass and optimization
@@ -343,6 +351,7 @@ class Predictor:
 
                 loss_per_element = self.criterion(self._bin_outputs(prob), labels)
                 
+
                 alpha = 4*labels**2
                 beta = 0.8
                 # upweight for contrasting low probabilities
@@ -422,7 +431,7 @@ class Predictor:
         fig, ax = plt.subplots(1, len(metrics_names) + 2, figsize=((len(metrics_names) + 2) * 5, 5))
         
         # join loss computation with date and time
-        title = "GPT2: " + str(self.loss_computation) + " -- " + DATETIME
+        title = "GPT2 RNN - handcrafted_data: " + str(self.loss_computation) + " -- " + DATETIME
         fig.suptitle(title, fontsize=16)
 
         textstr = "\n".join((
@@ -431,6 +440,9 @@ class Predictor:
             "patience: %d" % (self.patience, ),
             "weight decay: %.5f" % (self.weight_decay, ),
             "max grad norm: %.2f" % (self.max_grad_norm, ),
+            "lstm_hidden_size: %d" % (self.lstm_hidden_size, ),
+            "lstm_layers: %d" % (self.lstm_layers, ),
+            "lstm_dropout: %.2f" % (self.dropout/2, ),
             "classifier_hidden_size: %d" % (self.classifier_hidden_size, ),
             "dropout: %.2f" % (self.dropout, )))
 
@@ -537,10 +549,12 @@ class Predictor:
                     expected_time = time_so_far / (epoch + 1) * (self.epochs - epoch - 1)
                     print(f"Time elapsed: {time_so_far:.2f}s, Expected time remaining: {expected_time:.2f}s")
 
-                    # flush log file
+                    # flush log file (assuming log_file is the one opened in __main__)
+                    # this part might need adjustment if log_file is not accessible here
+                    # or if you mean sys.stdout which is redirected to a file.
+                    # if sys.stdout is redirected, it's usually buffered, and flushing can be done via sys.stdout.flush()
                     if sys.stdout.isatty() is False: # check if stdout is redirected
                          sys.stdout.flush()
-
 
         finally:
             if self.tqdm_log_file:
@@ -572,12 +586,27 @@ class Predictor:
         return prob.cpu().numpy(), class_value.cpu().numpy()
 
     class PredictionModel(nn.Module):
-        def __init__(self, text_encoder, classifier_hidden_size, dropout, output_dim):
+        def __init__(self, text_encoder, classifier_hidden_size, lstm_hidden_size, lstm_layers, dropout, output_dim):
             super().__init__()
             self.text_encoder = text_encoder
+            self.lstm_hidden_size = lstm_hidden_size
+            self.lstm_layers = lstm_layers
+            self.dropout = dropout
+
+            self.lstm = nn.LSTM(
+                input_size=GPT2Config.from_pretrained("gpt2").hidden_size, # input size is the dimension of GPT2's token embeddings
+                hidden_size=lstm_hidden_size, # lSTM hidden state size
+                batch_first=True, # input tensors are (batch_size, seq_len, input_size)
+                bidirectional=True, # use a bidirectional LSTM
+                num_layers=lstm_layers, # number of LSTM layers
+                dropout=dropout/2, # dropout between LSTM layers
+            )
+        
+            # the output size of a bidirectional LSTM is 2 * hidden_size
+            lstm_output_size = lstm_hidden_size * 2
 
             self.classifier = nn.Sequential(
-                nn.Linear(GPT2Config.from_pretrained("gpt2").hidden_size, classifier_hidden_size),
+                nn.Linear(lstm_output_size, classifier_hidden_size),
                 nn.LayerNorm(classifier_hidden_size),
                 nn.GELU(),
                 nn.Dropout(dropout),
@@ -603,23 +632,28 @@ class Predictor:
                     module.weight.data[module.padding_idx].zero_()
 
         def forward(self, input_ids, attention_mask):
+            # get the GPT2 embeddings
             out = self.text_encoder(input_ids=input_ids, attention_mask=attention_mask)
+
+            # get sequence output from GPT2 for use in LSTM
+            sequence_output = out.last_hidden_state
+
+            # pass the full sequence output through the LSTM
+            lstm_out, _ = self.lstm(sequence_output) # lstm_out shape: (batch_size, seq_len, lstm_hidden_size * 2)
             
-            # compute the actual lengths of each input (number of unmasked tokens)
-            lengths = attention_mask.sum(dim=1) # shape: (batch_size,)
-            last_indices = lengths - 1 # index of the last real token (not padding)
-            
-            batch_size = input_ids.size(0)
-            batch_indices = torch.arange(batch_size, device=input_ids.device)
+            # pick the LSTM output corresponding to the "current end of prefix"
+            # since GPT-2 is causal, the last non-padded position best represents the prefix
+            seq_lengths = attention_mask.sum(dim=1)               # (batch_size,)
+            last_idxs = (seq_lengths - 1).clamp(min=0).long()   # avoid negative
+            batch_idxs = torch.arange(attention_mask.size(0), device=attention_mask.device)
+            prefix_repr = lstm_out[batch_idxs, last_idxs, :]      # (batch_size, lstm_hidden_size * 2)
 
-            # select the final hidden state of the last non-padded token for each sequence
-            text_features = out.last_hidden_state[batch_indices, last_indices, :] # shape: (batch_size, hidden_dim)
+            # classification head
+            logits = self.classifier(prefix_repr)           # (batch_size, 1)
+            probs = torch.sigmoid(logits)
+            classes = torch.round(probs)
 
-            output = self.classifier(text_features)
-            prob = torch.sigmoid(output)
-            class_value = torch.round(prob)
-
-            return output, prob, class_value
+            return logits, probs, classes
         
     class TextDataset(Dataset):
         def __init__(self, text_data, labels, weights, text_transform=None, max_len=512):
@@ -628,7 +662,6 @@ class Predictor:
             self.weights = weights
             self.text_transform = text_transform
             self.max_len = max_len
-
         def __len__(self):
             return len(self.labels)
 
