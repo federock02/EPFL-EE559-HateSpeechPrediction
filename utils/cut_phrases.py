@@ -82,8 +82,8 @@ def main():
         description="Generates a new CSV file with entries for each prefix of a text column. "
                     "Each new entry includes the original label and a calculated weight."
     )
-    parser.add_argument("input_csv", help="Path to the input CSV file.")
-    parser.add_argument("output_csv", help="Path to save the generated CSV file.")
+    parser.add_argument("--input_csv", help="Path to the input CSV file.")
+    parser.add_argument("--output_csv", help="Path to save the generated CSV file.")
     parser.add_argument(
         "--text_column", 
         default="text", 

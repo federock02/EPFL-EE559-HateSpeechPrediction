@@ -1,32 +1,25 @@
-## 1. Building the Docker Image
+# Anticipating Hate Speech From Partial Input
+This project explores a novel approach to proactive hate speech moderation, aiming to predict the likelihood of hateful content as a sentence is being composed. This enables intervention before harmful messages are published, enhancing online safety.
 
-From the `docker` folder:
+Key Features:
+- Real-time Probability Estimation: We develop models that output a continuous probability score for hate speech presence based on partial user input, rather than just binary (hate/non-hate) classification on complete texts.
+- Hybrid Transformer Architectures: We investigate and compare both encoder-based (BERT) and decoder-based (GPT-2) transformer models, with optional recurrent (RNN) layers, to understand their strengths in this unique predictive task.
+- Two-Stage Training Strategy: Models are first trained on large public binary-labeled hate speech datasets, then fine-tuned on a custom, manually annotated dataset of sentence prefixes with human-perceived hate probabilities.
+- Weighted Loss for Nuance: A novel weighted loss function is introduced to prioritize early predictions and address label imbalance, particularly for less frequent, high-risk prefixes.
 
-- Place the `requirements.txt` file and `Dockerfile` inside a folder named after your Docker image (e.g., `ee559_docker_env`).
-- Open a terminal inside this folder and run the following command to build the image:
+Our experiments reveal an intriguing trade-off:
+- GPT-2 variants excelled in the initial binary classification phase on large datasets.
+- BERT-based models delivered superior and more reliable probabilistic estimates on partial inputs, highlighting their strength in nuanced classification.
+- The impact of RNN layers varied, sometimes improving performance by emphasizing sequential dependencies (e.g., in BERT's binary classification) and sometimes degrading the nuanced probability estimates.
 
+## 1. Installing Requirements
+To guarantee the presence of all the required libraries, this command should be run:
 ```bash
-docker build --platform linux/amd64 . \
-  --tag registry.rcp.epfl.ch/ee-559-<username>/my-toolbox:v0.1 \
-  --build-arg LDAP_GROUPNAME=rcp-runai-course-ee-559_AppGrpU \
-  --build-arg LDAP_GID=84650 \
-  --build-arg LDAP_USERNAME=<username> \
-  --build-arg LDAP_UID=<uid>P_GROUPNAME=rcp-runai-course-ee-559_AppGrpU --build-arg LDAP_GID=84650 --build-arg LDAP_USERNAME=<username> --build-arg LDAP_UID=<uid>
+    pip install -r requirements.txt
 ```
 
-## 2. Pushing the Image to the Registry
-
-After the image has been built successfully, push it to the EPFL registry:
-
-```bash
-    docker push registry.rcp.epfl.ch/ee-559-<username>/my-toolbox:v0.1
-```
-
-
-## 3. Running the Python Script
-
-You can launch the Python script either in a training job or an interactive job using the command:
-
+## 2. Running the Python Script
+You can launch the Python script using the command:
 ```bash
     python3 ~/Predictor/predictor_....py --<arguments>
 ```
@@ -40,7 +33,7 @@ All the arguments that can be added to the command are:
 - `--finetune`: flag that indicates that the model loaded will be finetuned (optional)
 - `--test`: flag to activate the testing mode (optional)
 
-# Base Training
+### Base Training
 
 The possible architectures that can be trained are:
 - `peredictor_BERT.py`: uses *BERT* encoder as base text transformer
@@ -52,7 +45,7 @@ The hyperparameters used in the training process are expected to be in a `cfg.ya
 
 The dataset that are expected in this phase consist of classification datasets, labeled with binary labels. 1 is the positive class, 0 is the negative class. The phrases to train on are sourced from the `text` column in the `.csv` files, and will be cut in all the possible sub-prefixes of various length during the dataset loading phase; the labels are sourced from the `label` column.
 
-# Finetuning
+### Finetuning
 
 Once one of the previous models has been trained, it can be finetuned using a dataset labeled with probabilities. To finetune a trained model, it must be loaded by passing the path to the results folder for the previously trained model as argument after `--load_model_dir`, followed by the flag `--finetune`.
 
@@ -66,12 +59,38 @@ To train each one of the models listed above, the corresponding `..._hadcrafted.
 
 All these models can also be traiend from scratch, if run without loading the model and without the finetuning flag.
 
-## 4. Dataset preprocessing
+## 3. Dataset preprocessing
 We provide four useful script for managing the datasets:
-- `utils\cut_phrases.py`: loads a dataset of complete phrases, cuts them into all the possible prefixes of various lengths, adds the original label relative to the complete sentence and associates the length percentage weight for each prefix.
-- `utils\add_weights.py`: useful when a dataset with prefixes is available, and the weight for each prefix needs to be computed. Only works if to each prefix is associated an index that connects it to the original complete phrase.
-- `utils\check_dataset.py`: returns some statistics about the dataset, and can be used for binary-labeled datasets of complete phrases.
-- `utils\check_prefix_dataset.py`: returns some statistics about the dataset, and can be used for probability-labeled datasets of prefixes.
+- `utils/cut_phrases.py`: loads a dataset of complete phrases, cuts them into all the possible prefixes of various lengths, adds the original label relative to the complete sentence and associates the length percentage weight for each prefix.
+- `utils/add_weights.py`: useful when a dataset with prefixes is available, and the weight for each prefix needs to be computed. Only works if to each prefix is associated an index that connects it to the original complete phrase.
+- `utils/check_dataset.py`: returns some statistics about the dataset, and can be used for binary-labeled datasets of complete phrases.
+- `utils/check_prefix_dataset.py`: returns some statistics about the dataset, and can be used for probability-labeled datasets of prefixes.
 
-## 5. Testing
+## 4. Testing
 All the trained models can be loaded, using the same `peredictor_....py` it was trained with, adding the path of the trained weights after `--load_model_dir` and adding the `--test` flag. The data used for testing is loaded from the folder linked by `--dataset_path`.
+
+## 5. Example Pipeline
+Here follow an example of a training pipeline that can be executed, using the BERT-bsed model this time. This can easily be adapted for the other architectures.
+1. Finding binary-labeled hate speech classification datasets
+2. Running a training on the binary-labeled dataset:
+```bash
+    python3 ~/Predictor/predictor_BERT.py - --dataset_path ~/Predictor/data_classification/ --result_path ~/Predictor/results_classification/
+```
+3. Finding another hate-speech dataset
+4. Cutting the phrases into prefixes and adding the relative weights:
+```bash
+    python3 ~/Predictor/utils/cut_phrases.py --input_csv ~/Predictor/data_prefixes/<dataset> --output_csv ~/Predictor/data_prefixes/<dataset_cut>
+```
+5. Hand-labeling the newly cut dataset with probability labels
+6. Finetuning the previously trained model (step 2):
+```bash
+    python3 ~/Predictor/predictor_BERT_handcrafted.py - --dataset_path ~/Predictor/data_prefixes/ --result_path ~/Predictor/results_probabilities/ --load_model_dir ~/Predictor/results_classification/<model> --finetune
+```
+7. Finding another dataset for testing (or creating one), with prefixes and probability labels
+8. Testing the trained and finetuned models:
+```bash
+    python3 ~/Predictor/predictor_BERT_handcrafted.py - --dataset_path ~/Predictor/data_test/ --result_path ~/Predictor/results_probabilities/ --load_model_dir ~/Predictor/results_classification/<model> --test
+```
+```bash
+    python3 ~/Predictor/predictor_BERT_handcrafted.py - --dataset_path ~/Predictor/data_test/ --result_path ~/Predictor/results_probabilities/ --load_model_dir ~/Predictor/results_classification/<model_finetuned> --test
+```
