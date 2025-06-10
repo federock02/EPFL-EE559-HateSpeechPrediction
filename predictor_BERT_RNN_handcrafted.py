@@ -79,8 +79,6 @@ class Predictor:
             for param in self.text_encoder.pooler.parameters():
                 param.requires_grad = True
 
-        print(f"Text encoder model:\n{self.text_encoder}")
-
         # prediction model
         model = self.PredictionModel(
             text_encoder=self.text_encoder,
