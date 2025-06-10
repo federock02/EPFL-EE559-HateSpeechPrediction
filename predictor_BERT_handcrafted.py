@@ -126,12 +126,7 @@ class Predictor:
             
 
         # criterion
-        if self.loss_computation == "classes" or self.loss_computation == "probabilities":
-            self.criterion = nn.BCELoss(reduction='none')
-        elif self.loss_computation == "logits":
-            self.criterion = nn.BCEWithLogitsLoss(reduction='none')
-        else:
-            self.criterion = nn.MSELoss(reduction='none')
+        self.criterion = nn.MSELoss(reduction='none')
 
         # metrics
         self.metrics = {
