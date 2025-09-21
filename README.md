@@ -1,5 +1,5 @@
 # Anticipating Hate Speech From Partial Input
-This project explores a novel approach to proactive hate speech moderation, aiming to predict the likelihood of hateful content as a sentence is being composed. This enables intervention before harmful messages are published, enhancing online safety.
+This project explores a novel approach to proactive hate speech moderation, aiming to predict the likelihood of hateful content as a sentence is being composed. This enables intervention before harmful messages are published, enhancing online safety. The report can be visualized [here](https://github.com/federock02/EPFL-EE559-HateSpeechDetection/blob/main/Report.pdf), please have a look.
 
 Key Features:
 - Real-time Probability Estimation: We develop models that output a continuous probability score for hate speech presence based on partial user input, rather than just binary (hate/non-hate) classification on complete texts.
